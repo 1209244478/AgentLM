@@ -122,6 +122,85 @@
 
 ---
 
+#### 📁 项目结构
+
+```
+minimind/
+├── model/                           # 模型定义
+│   ├── model_minimind.py            # 核心 LLM：MiniMindConfig, MiniMindForCausalLM,
+│   │                                #   MiniMindBlock, TTTFeedForward, MTPHead, MoE,
+│   │                                #   KVCache (预分配), Attention (FA2/SDPA/Manual 三级路由)
+│   ├── model_advanced.py            # DeepSeek V4 高级模块：mHC 流形约束超连接 + CSA 压缩注意力
+│   ├── model_omni.py                # 全模态 Thinker-Talker 双路径模型
+│   ├── model_lora.py                # LoRA 微调模块
+│   ├── minimind_rag.py              # RAG 检索增强生成
+│   ├── tokenizer.json               # LLM tokenizer
+│   ├── tokenizer_config.json        # tokenizer 配置
+│   ├── mimi/                        # 音频编解码器配置 (Mimi)
+│   ├── SenseVoiceSmall/             # ASR 语音识别编码器配置
+│   ├── siglip2-base-p32-256-ve/     # 视觉编码器配置 (SigLIP2)
+│   ├── campplus/                    # 说话人识别编码器配置 (CAMPPlus)
+│   ├── speaker/                     # 声纹克隆模型
+│   └── vad/                         # 语音活动检测模型 (Silero VAD)
+│
+├── trainer/                         # 训练脚本
+│   ├── trainer_utils.py             # 训练工具集：学习率调度、DDP、checkpoint、Muon优化器
+│   ├── train_full_sft.py            # 全量 SFT 微调（主入口，支持 --optimizer muon）
+│   ├── train_pretrain.py            # 预训练
+│   ├── train_distillation.py        # 知识蒸馏
+│   ├── train_lora.py                # LoRA 微调
+│   ├── train_dpo.py                 # DPO 对齐训练
+│   ├── train_grpo.py                # GRPO 组相对策略优化
+│   ├── train_ppo.py                 # PPO 近端策略优化
+│   ├── train_agent.py               # Agent RL 工具使用训练
+│   ├── train_meta_ttt.py            # Meta-TTT 推理时训练
+│   ├── train_sft_omni.py            # 多模态 Omni SFT 训练
+│   ├── train_tokenizer.py           # Tokenizer 训练
+│   ├── honest_training.py           # 诚实性训练奖励模块
+│   ├── rollout_engine.py            # Rollout 生成引擎
+│   └── eval_utils.py                # TTT 评估工具
+│
+├── dataset/                         # 数据集
+│   ├── lm_dataset.py                # 文本数据集加载器
+│   ├── omni_dataset.py              # 多模态数据集加载器
+│   ├── convert_mint_arxiv.py        # MINT-1T ArXiv 数据转换脚本（断点续传+超时重试）
+│   ├── pretrain_combined.jsonl      # 预训练合并数据 (~2.1GB, 含 MINT-1T)
+│   ├── sft_combined.jsonl           # SFT 合并数据 (~1.7GB, 含 MINT-1T)
+│   ├── pretrain_t2t_mini.jsonl      # 预训练原始数据 (~1.2GB)
+│   ├── sft_t2t_mini.jsonl           # SFT 原始数据 (~1.6GB)
+│   ├── rlaif.jsonl                  # RL 对齐数据 (~23MB)
+│   └── eval_omni/                   # 多模态评估数据 (44 个文件)
+│
+├── scripts/                         # 工具脚本
+│   ├── web_demo.py                  # LLM 对话演示
+│   ├── web_demo_omni.py             # 多模态对话演示
+│   ├── convert_model.py             # 模型格式转换
+│   ├── convert_omni.py              # 多模态模型格式转换
+│   ├── chat_api.py                  # API 对话接口
+│   ├── serve_openai_api.py          # OpenAI 兼容 API 服务
+│   └── eval_toolcall.py             # Tool Call 评估
+│
+├── webui/                           # Web UI
+│   ├── web_demo.py                  # 多模态 Web 后端
+│   └── web_demo.html                # 前端界面
+│
+├── tests/                           # 测试
+│   └── test_all.py                  # 统一测试：27 项覆盖构建/前向/TTT/MHC+CSA/Muon/OPD/生成
+│
+├── mini-RAG/                        # 外挂 RAG 系统 (LightRAG)
+├── minimind-3/                      # MiniMind-3 预训练模型发布包
+│   ├── model.safetensors            # 模型权重 (~123MB)
+│   ├── config.json                  # MiniMind-3 配置 (768, 8L)
+│   ├── config_5.json                # MiniMind-5 配置 (1024, 12L, 含MTP/TTT)
+│   └── tokenizer 相关文件
+│
+├── eval_llm.py                      # LLM 评估脚本
+├── eval_omni.py                     # 多模态评估脚本
+└── requirements.txt                 # 依赖列表
+```
+
+---
+
 #### 📝 更新日志
 
 <details> 
@@ -563,17 +642,23 @@ MiniMind训练数据集下载地址： [ModelScope](https://www.modelscope.cn/da
 
 将下载的数据集文件放到`./dataset/`目录下（✨为推荐的必须项）
 
-```bash
-./dataset/
-├── agent_rl.jsonl (86MB)
-├── agent_rl_math.jsonl (18MB)
-├── dpo.jsonl (53MB)
-├── pretrain_t2t_mini.jsonl (1.2GB, ✨)
-├── pretrain_t2t.jsonl (10GB)
-├── rlaif.jsonl (24MB, ✨)
-├── sft_t2t_mini.jsonl (1.6GB, ✨)
-└── sft_t2t.jsonl (14GB)
-```
+| 文件 | 用途 | 大小 |
+|------|------|------|
+| `pretrain_combined.jsonl` | 预训练（含 MINT-1T ArXiv） | ~2.1 GB |
+| `sft_combined.jsonl` | SFT 微调（含 MINT-1T ArXiv） | ~1.7 GB |
+| `pretrain_t2t_mini.jsonl` ✨ | 预训练（原始） | ~1.2 GB |
+| `sft_t2t_mini.jsonl` ✨ | SFT 微调（原始） | ~1.6 GB |
+| `pretrain_t2t.jsonl` | 预训练（完整） | ~10 GB |
+| `sft_t2t.jsonl` | SFT 微调（完整） | ~14 GB |
+| `pretrain_mint_arxiv.jsonl` | MINT-1T ArXiv 预训练 | ~889 MB |
+| `sft_mint_arxiv.jsonl` | MINT-1T ArXiv SFT | ~21 MB |
+| `rlaif.jsonl` ✨ | RL 对齐 | ~24 MB |
+| `dpo.jsonl` | DPO 偏好数据 | ~53 MB |
+| `agent_rl.jsonl` | Agentic RL 训练 | ~86 MB |
+| `agent_rl_math.jsonl` | Agentic RL 数学 | ~18 MB |
+
+> MINT-1T ArXiv 数据通过 `dataset/convert_mint_arxiv.py` 从 HuggingFace 下载并转换，
+> 支持 SSL 超时重试和断点续传。合并后的 `*_combined.jsonl` 为训练默认数据。
 
 <details>
 <summary>注：各数据集简介</summary>
@@ -643,6 +728,96 @@ MiniMind训练数据集下载地址： [ModelScope](https://www.modelscope.cn/da
 ![structure](./images/LLM-structure.jpg)
 ![structure-moe](./images/LLM-structure-moe.jpg)
 
+<details>
+<summary><b>📐 MiniMindConfig 参数说明</b></summary>
+
+核心配置类 `MiniMindConfig` 继承自 `transformers.PretrainedConfig`：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `hidden_size` | 768 | 隐藏层维度 |
+| `num_hidden_layers` | 8 | Transformer 层数 |
+| `num_attention_heads` | 8 | 注意力头数 |
+| `num_key_value_heads` | 4 | KV 头数 (GQA) |
+| `head_dim` | `hidden_size // num_attention_heads` | 单头维度 |
+| `intermediate_size` | `hidden_size * π` 取整 | FFN 中间层维度 |
+| `vocab_size` | 6400 | 词表大小 |
+| `max_position_embeddings` | 32768 | 最大序列长度 |
+| `rope_theta` | 1e6 | RoPE 基频 |
+| `rms_norm_eps` | 1e-6 | RMSNorm epsilon |
+| `dropout` | 0.0 | Dropout 概率 |
+| `flash_attn` | True | Flash Attention |
+| `use_moe` | False | MoE 混合专家 |
+| `num_experts` | 4 | MoE 专家数 |
+| `num_experts_per_tok` | 1 | 每 token 激活专家数 |
+| **`layer_share_factor`** | 1 | 跨层参数共享（N=2 表示每 2 层共享） |
+| **`mtp_num_heads`** | 0 | 多 token 预测头数 |
+| **`mtp_loss_weight`** | 0.1 | MTP 辅助损失权重 |
+| **`ttt_enabled`** | False | 推理时训练 (In-Place TTT) |
+| **`ttt_lr`** | 1e-4 | TTT 学习率 |
+| **`ttt_chunk_size`** | 512 | TTT chunk 大小 |
+
+</details>
+
+<details>
+<summary><b>🔧 模型组件树</b></summary>
+
+```
+MiniMindForCausalLM
+├── MiniMindModel (Base)
+│   ├── embed_tokens (nn.Embedding)
+│   └── layers (共享组 × 重复次数)
+│       └── MiniMindBlock
+│           ├── Attention (三级路由)
+│           │   ├── Flash Attention 2  ← 训练，最快 (需 pip install flash-attn)
+│           │   ├── PyTorch SDPA       ← 推理+KV Cache，次快
+│           │   └── Manual Attention   ← Fallback 兼容
+│           │   ├── q_proj / k_proj / v_proj / o_proj
+│           │   ├── q_norm / k_norm (RMSNorm)
+│           │   └── RoPE 旋转位置编码 (优化实现)
+│           ├── FeedForward (或 MOEFeedForward / TTTFeedForward)
+│           │   ├── gate_proj → SiLU
+│           │   ├── up_proj → SiLU → down_proj
+│           │   └── (MoE: 多专家 + Router + 共享专家)
+│           │   └── (TTT: chunk 内 self-supervised 权重更新)
+│           └── RMSNorm (pre-norm, torch.compile 友好)
+├── mtp_heads (可选)
+│   └── MTPHead (多 token 预测头)
+└── lm_head (输出投影)
+```
+
+</details>
+
+<details>
+<summary><b>⚡ Transformer 性能优化要点</b></summary>
+
+MiniMind 的 Attention 层实现了三级路由，自动选择最快路径：
+
+| 路径 | 条件 | 场景 | 加速效果 |
+|------|------|------|----------|
+| Flash Attention 2 | `flash-attn` 已安装 + 训练 | 训练 | 显存 O(N²)→O(N)，速度 2-3x |
+| PyTorch SDPA | `torch>=2.0` + KV Cache | 推理 | 推理速度 2x |
+| Manual Attention | Fallback | 兼容 | 基准 |
+
+**KVCache 预分配**（`model/model_minimind.py` 中的 `KVCache` 类）：
+- 推理时预分配固定大小 buffer，避免每步 `torch.cat` 的 O(n²) 显存分配
+- `generate()` 自动使用 Prefill + Decode 模式：先一次处理完整 prompt，再逐 token decode
+- 首 token 延迟降低 10x+
+
+**其他优化**：
+- RoPE 优化：直接拆分计算 `q1*cos - q2*sin`，减少中间张量分配
+- RMSNorm 内联：消除独立 `norm()` 方法，1 次 float 转换，`torch.compile` 友好
+- Generate Prefill：先一次处理完整 prompt，再逐 token decode，首 token 延迟降低 10x+
+
+**安装 Flash Attention 2：**
+```bash
+pip install flash-attn --no-build-isolation
+```
+
+无需修改代码，安装后自动启用 FA2 路径。
+
+</details>
+
 #### 高级模块
 
 `model/model_advanced.py` 提供基于 DeepSeek V4 的可插拔高级注意力模块：
@@ -670,6 +845,47 @@ MiniMind训练数据集下载地址： [ModelScope](https://www.modelscope.cn/da
 
 
 ## 模型配置
+
+### MiniMind-3
+
+文件：`minimind-3/config.json`
+
+```
+hidden_size:              768
+num_hidden_layers:        8
+num_attention_heads:      8
+num_key_value_heads:      4
+head_dim:                 96
+intermediate_size:        2432
+vocab_size:               6400
+max_position_embeddings:  32768
+rope_theta:               1,000,000
+参数量:                    ~64M (模型维度) / ~128M (含嵌入)
+```
+
+### MiniMind-5 (增强版，默认配置)
+
+文件：`minimind-3/config_5.json`
+
+```
+hidden_size:              1024
+num_hidden_layers:        12
+num_attention_heads:      16
+num_key_value_heads:      8
+head_dim:                 64
+intermediate_size:        3520
+vocab_size:               32000
+layer_share_factor:       2       ← 跨层参数共享
+mtp_num_heads:            2       ← 多 token 预测
+ttt_enabled:              True    ← 推理时训练
+ttt_chunk_size:           512
+参数量:                    ~186M (含 TTT + MTP 头)
+```
+
+> MiniMind-5 已设为训练脚本默认配置（`hidden_size=1024`, `num_hidden_layers=12`），
+> 数据路径默认指向合并数据集 `pretrain_combined.jsonl` / `sft_combined.jsonl`。
+
+### 配置选择说明
 
 关于 LLM 的参数配置，[MobileLLM](https://arxiv.org/pdf/2402.14905) 对小模型做过一组很有代表性的系统研究。对 MiniMind 这类百M级模型而言，`d_model` 与 `n_layers` 的取舍不只是参数分配问题，也会直接影响训练稳定性与最终效果。
 
@@ -769,6 +985,15 @@ from model.model_advanced import MHC_CSABlock
 
 block = MHC_CSABlock(layer_id=0, config=config, use_csa=True, num_streams=2)
 out, cache = block(hidden_states, position_embeddings)
+```
+
+---
+
+### 运行测试
+
+```bash
+python tests/test_all.py
+# 27 项测试覆盖：模型构建、前向、TTT、MHC+CSA、Muon、OPD、生成
 ```
 
 ---

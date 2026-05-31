@@ -112,6 +112,85 @@ At the same time, third-party LLM frameworks and toolkits such as `transformers`
 
 ---
 
+#### 📁 Project Structure
+
+```
+minimind/
+├── model/                           # Model definitions
+│   ├── model_minimind.py            # Core LLM: MiniMindConfig, MiniMindForCausalLM,
+│   │                                #   MiniMindBlock, TTTFeedForward, MTPHead, MoE,
+│   │                                #   KVCache (pre-allocated), Attention (FA2/SDPA/Manual 3-level routing)
+│   ├── model_advanced.py            # DeepSeek V4 advanced modules: mHC manifold-constrained hyper-connections + CSA compressed attention
+│   ├── model_omni.py                # Full-modal Thinker-Talker dual-path model
+│   ├── model_lora.py                # LoRA fine-tuning module
+│   ├── minimind_rag.py              # RAG retrieval-augmented generation
+│   ├── tokenizer.json               # LLM tokenizer
+│   ├── tokenizer_config.json        # tokenizer configuration
+│   ├── mimi/                        # Audio codec configuration (Mimi)
+│   ├── SenseVoiceSmall/             # ASR speech recognition encoder configuration
+│   ├── siglip2-base-p32-256-ve/     # Vision encoder configuration (SigLIP2)
+│   ├── campplus/                    # Speaker recognition encoder configuration (CAMPPlus)
+│   ├── speaker/                     # Voice cloning model
+│   └── vad/                         # Voice activity detection model (Silero VAD)
+│
+├── trainer/                         # Training scripts
+│   ├── trainer_utils.py             # Training utilities: LR scheduling, DDP, checkpoint, Muon optimizer
+│   ├── train_full_sft.py            # Full SFT fine-tuning (main entry, supports --optimizer muon)
+│   ├── train_pretrain.py            # Pretraining
+│   ├── train_distillation.py        # Knowledge distillation
+│   ├── train_lora.py                # LoRA fine-tuning
+│   ├── train_dpo.py                 # DPO alignment training
+│   ├── train_grpo.py                # GRPO group relative policy optimization
+│   ├── train_ppo.py                 # PPO proximal policy optimization
+│   ├── train_agent.py               # Agent RL tool-use training
+│   ├── train_meta_ttt.py            # Meta-TTT test-time training
+│   ├── train_sft_omni.py            # Multimodal Omni SFT training
+│   ├── train_tokenizer.py           # Tokenizer training
+│   ├── honest_training.py           # Honesty training reward module
+│   ├── rollout_engine.py            # Rollout generation engine
+│   └── eval_utils.py                # TTT evaluation utilities
+│
+├── dataset/                         # Datasets
+│   ├── lm_dataset.py                # Text dataset loader
+│   ├── omni_dataset.py              # Multimodal dataset loader
+│   ├── convert_mint_arxiv.py        # MINT-1T ArXiv data conversion script (checkpoint resume + timeout retry)
+│   ├── pretrain_combined.jsonl      # Pretraining combined data (~2.1GB, incl. MINT-1T)
+│   ├── sft_combined.jsonl           # SFT combined data (~1.7GB, incl. MINT-1T)
+│   ├── pretrain_t2t_mini.jsonl      # Pretraining original data (~1.2GB)
+│   ├── sft_t2t_mini.jsonl           # SFT original data (~1.6GB)
+│   ├── rlaif.jsonl                  # RL alignment data (~23MB)
+│   └── eval_omni/                   # Multimodal evaluation data (44 files)
+│
+├── scripts/                         # Utility scripts
+│   ├── web_demo.py                  # LLM chat demo
+│   ├── web_demo_omni.py             # Multimodal chat demo
+│   ├── convert_model.py             # Model format conversion
+│   ├── convert_omni.py              # Multimodal model format conversion
+│   ├── chat_api.py                  # API chat interface
+│   ├── serve_openai_api.py          # OpenAI-compatible API server
+│   └── eval_toolcall.py             # Tool Call evaluation
+│
+├── webui/                           # Web UI
+│   ├── web_demo.py                  # Multimodal Web backend
+│   └── web_demo.html                # Frontend interface
+│
+├── tests/                           # Tests
+│   └── test_all.py                  # Unified tests: 27 items covering build/forward/TTT/MHC+CSA/Muon/OPD/generation
+│
+├── mini-RAG/                        # External RAG system (LightRAG)
+├── minimind-3/                      # MiniMind-3 pretrained model release package
+│   ├── model.safetensors            # Model weights (~123MB)
+│   ├── config.json                  # MiniMind-3 config (768, 8L)
+│   ├── config_5.json                # MiniMind-5 config (1024, 12L, incl. MTP/TTT)
+│   └── tokenizer related files
+│
+├── eval_llm.py                      # LLM evaluation script
+├── eval_omni.py                     # Multimodal evaluation script
+└── requirements.txt                 # Dependencies list
+```
+
+---
+
 #### 📝 Changelog
 
 <details> 
@@ -512,17 +591,23 @@ MiniMind training dataset download links: [ModelScope](https://www.modelscope.cn
 
 Place the downloaded dataset files in the `./dataset/` directory (✨ indicates recommended essentials)
 
-```bash
-./dataset/
-├── agent_rl.jsonl (86MB)
-├── agent_rl_math.jsonl (18MB)
-├── dpo.jsonl (53MB)
-├── pretrain_t2t_mini.jsonl (1.2GB, ✨)
-├── pretrain_t2t.jsonl (10GB)
-├── rlaif.jsonl (24MB, ✨)
-├── sft_t2t_mini.jsonl (1.6GB, ✨)
-└── sft_t2t.jsonl (14GB)
-```
+| File | Purpose | Size |
+|------|------|------|
+| `pretrain_combined.jsonl` | Pretraining (incl. MINT-1T ArXiv) | ~2.1 GB |
+| `sft_combined.jsonl` | SFT fine-tuning (incl. MINT-1T ArXiv) | ~1.7 GB |
+| `pretrain_t2t_mini.jsonl` ✨ | Pretraining (original) | ~1.2 GB |
+| `sft_t2t_mini.jsonl` ✨ | SFT fine-tuning (original) | ~1.6 GB |
+| `pretrain_t2t.jsonl` | Pretraining (full) | ~10 GB |
+| `sft_t2t.jsonl` | SFT fine-tuning (full) | ~14 GB |
+| `pretrain_mint_arxiv.jsonl` | MINT-1T ArXiv pretraining | ~889 MB |
+| `sft_mint_arxiv.jsonl` | MINT-1T ArXiv SFT | ~21 MB |
+| `rlaif.jsonl` ✨ | RL alignment | ~24 MB |
+| `dpo.jsonl` | DPO preference data | ~53 MB |
+| `agent_rl.jsonl` | Agentic RL training | ~86 MB |
+| `agent_rl_math.jsonl` | Agentic RL math | ~18 MB |
+
+> MINT-1T ArXiv data can be downloaded from HuggingFace and converted via `dataset/convert_mint_arxiv.py`,
+> with SSL timeout retry and checkpoint resume support. The merged `*_combined.jsonl` files are the default training data.
 
 <details>
 <summary>Note: Brief Introduction to Each Dataset</summary>
@@ -592,6 +677,96 @@ The `minimind-3` series structure is shown below:
 ![structure](./images/LLM-structure.jpg)
 ![structure-moe](./images/LLM-structure-moe.jpg)
 
+<details>
+<summary><b>📐 MiniMindConfig Parameters</b></summary>
+
+The core configuration class `MiniMindConfig` inherits from `transformers.PretrainedConfig`:
+
+| Parameter | Default | Description |
+|------|--------|------|
+| `hidden_size` | 768 | Hidden layer dimension |
+| `num_hidden_layers` | 8 | Number of Transformer layers |
+| `num_attention_heads` | 8 | Number of attention heads |
+| `num_key_value_heads` | 4 | Number of KV heads (GQA) |
+| `head_dim` | `hidden_size // num_attention_heads` | Per-head dimension |
+| `intermediate_size` | `hidden_size * π` rounded | FFN intermediate dimension |
+| `vocab_size` | 6400 | Vocabulary size |
+| `max_position_embeddings` | 32768 | Maximum sequence length |
+| `rope_theta` | 1e6 | RoPE base frequency |
+| `rms_norm_eps` | 1e-6 | RMSNorm epsilon |
+| `dropout` | 0.0 | Dropout probability |
+| `flash_attn` | True | Flash Attention |
+| `use_moe` | False | MoE mixture of experts |
+| `num_experts` | 4 | Number of MoE experts |
+| `num_experts_per_tok` | 1 | Number of active experts per token |
+| **`layer_share_factor`** | 1 | Cross-layer parameter sharing (N=2 means every 2 layers share) |
+| **`mtp_num_heads`** | 0 | Number of multi-token prediction heads |
+| **`mtp_loss_weight`** | 0.1 | MTP auxiliary loss weight |
+| **`ttt_enabled`** | False | Test-time training (In-Place TTT) |
+| **`ttt_lr`** | 1e-4 | TTT learning rate |
+| **`ttt_chunk_size`** | 512 | TTT chunk size |
+
+</details>
+
+<details>
+<summary><b>🔧 Model Component Tree</b></summary>
+
+```
+MiniMindForCausalLM
+├── MiniMindModel (Base)
+│   ├── embed_tokens (nn.Embedding)
+│   └── layers (shared groups × repetitions)
+│       └── MiniMindBlock
+│           ├── Attention (3-level routing)
+│           │   ├── Flash Attention 2  ← Training, fastest (requires pip install flash-attn)
+│           │   ├── PyTorch SDPA       ← Inference + KV Cache, second fastest
+│           │   └── Manual Attention   ← Fallback compatibility
+│           │   ├── q_proj / k_proj / v_proj / o_proj
+│           │   ├── q_norm / k_norm (RMSNorm)
+│           │   └── RoPE rotary positional encoding (optimized implementation)
+│           ├── FeedForward (or MOEFeedForward / TTTFeedForward)
+│           │   ├── gate_proj → SiLU
+│           │   ├── up_proj → SiLU → down_proj
+│           │   └── (MoE: multi-expert + Router + shared expert)
+│           │   └── (TTT: in-chunk self-supervised weight update)
+│           └── RMSNorm (pre-norm, torch.compile friendly)
+├── mtp_heads (optional)
+│   └── MTPHead (multi-token prediction heads)
+└── lm_head (output projection)
+```
+
+</details>
+
+<details>
+<summary><b>⚡ Transformer Performance Optimizations</b></summary>
+
+MiniMind's Attention layer implements 3-level routing, automatically selecting the fastest path:
+
+| Path | Condition | Scenario | Speedup |
+|------|------|------|----------|
+| Flash Attention 2 | `flash-attn` installed + training | Training | Memory O(N²)→O(N), speed 2-3x |
+| PyTorch SDPA | `torch>=2.0` + KV Cache | Inference | Inference speed 2x |
+| Manual Attention | Fallback | Compatibility | Baseline |
+
+**KVCache Pre-allocation** (`KVCache` class in `model/model_minimind.py`):
+- Pre-allocates fixed-size buffer during inference, avoiding O(n²) memory allocation from `torch.cat` at each step
+- `generate()` automatically uses Prefill + Decode mode: process full prompt at once, then decode token by token
+- First-token latency reduced 10x+
+
+**Other optimizations**:
+- RoPE optimization: direct split computation `q1*cos - q2*sin`, reducing intermediate tensor allocation
+- RMSNorm inlining: eliminates standalone `norm()` method, 1 float conversion, `torch.compile` friendly
+- Generate Prefill: process full prompt at once, then decode token by token, first-token latency reduced 10x+
+
+**Installing Flash Attention 2:**
+```bash
+pip install flash-attn --no-build-isolation
+```
+
+No code changes needed; FA2 path is automatically enabled after installation.
+
+</details>
+
 To modify model configuration, see [./model/model_minimind.py](./model/model_minimind.py). Reference model parameter versions are shown in the table below:
 
 | Model Name | params | len_vocab | max_pos | rope_theta | n_layers | d_model | kv_heads | q_heads | note |
@@ -605,6 +780,47 @@ To modify model configuration, see [./model/model_minimind.py](./model/model_min
 
 
 ## Model Configuration
+
+### MiniMind-3
+
+File: `minimind-3/config.json`
+
+```
+hidden_size:              768
+num_hidden_layers:        8
+num_attention_heads:      8
+num_key_value_heads:      4
+head_dim:                 96
+intermediate_size:        2432
+vocab_size:               6400
+max_position_embeddings:  32768
+rope_theta:               1,000,000
+Parameters:               ~64M (model dimension) / ~128M (including embeddings)
+```
+
+### MiniMind-5 (Enhanced, Default Configuration)
+
+File: `minimind-3/config_5.json`
+
+```
+hidden_size:              1024
+num_hidden_layers:        12
+num_attention_heads:      16
+num_key_value_heads:      8
+head_dim:                 64
+intermediate_size:        3520
+vocab_size:               32000
+layer_share_factor:       2       ← Cross-layer parameter sharing
+mtp_num_heads:            2       ← Multi-token prediction
+ttt_enabled:              True    ← Test-time training
+ttt_chunk_size:           512
+Parameters:               ~186M (including TTT + MTP heads)
+```
+
+> MiniMind-5 is now the default training configuration (`hidden_size=1024`, `num_hidden_layers=12`).
+> Data paths default to the combined datasets `pretrain_combined.jsonl` / `sft_combined.jsonl`.
+
+### Configuration Selection Guide
 
 Regarding LLM parameter configuration, [MobileLLM](https://arxiv.org/pdf/2402.14905) has conducted a very representative systematic study on small models. For ~100M-level models like MiniMind, the trade-off between `d_model` and `n_layers` is not just a parameter allocation issue, but also directly affects training stability and final performance.
 
@@ -629,6 +845,15 @@ For reference, GPT-3's parameter settings are as follows:
 ![gpt3_config.png](./images/gpt3_config.png)
 
 </details>
+
+---
+
+### Running Tests
+
+```bash
+python tests/test_all.py
+# 27 tests covering: model build, forward, TTT, MHC+CSA, Muon, OPD, generation
+```
 
 ---
 

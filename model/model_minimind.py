@@ -59,6 +59,16 @@ class MiniMindConfig(PretrainedConfig):
         self.ttt_lr = kwargs.get("ttt_lr", 1e-4)  # TTT 学习率
         self.ttt_chunk_size = kwargs.get("ttt_chunk_size", 512)  # TTT chunk 大小
         self.ttt_layers = kwargs.get("ttt_layers", None)  # 哪些层启用 TTT，None=最后25%
+        ### Attention type: "standard" | "linear" | "alibi"
+        self.attention_type = kwargs.get("attention_type", "standard")
+        ### Parallel Attention + FFN (PaLM style)
+        self.parallel_attn_ffn = kwargs.get("parallel_attn_ffn", False)
+        ### LoRA-FFN: 在 FFN 内部加低秩旁路
+        self.lora_ffn = kwargs.get("lora_ffn", False)
+        self.lora_ffn_r = kwargs.get("lora_ffn_r", 8)
+        ### Mamba hybrid: 底层 Mamba + 顶层 Attention
+        self.mamba_hybrid = kwargs.get("mamba_hybrid", False)
+        self.mamba_ratio = kwargs.get("mamba_ratio", 0.5)  # 底层 Mamba 占比
 
 # 🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏
 #                                     MiniMind Model
@@ -216,6 +226,144 @@ class Attention(nn.Module):
         output = self.resid_dropout(self.o_proj(output))
         return output, past_kv
 
+class LinearAttention(nn.Module):
+    """线性注意力：用 ELU+1 特征映射替代 softmax，复杂度 O(N)
+
+    核心思想：φ(Q)(φ(K)^T V) 先算 K^T V (d×d)，再乘 Q，避免 N×N 注意力矩阵。
+    因果掩码通过 cumulative sum 实现。
+    """
+
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.num_key_value_heads = config.num_attention_heads if config.num_key_value_heads is None else config.num_key_value_heads
+        self.n_local_heads = config.num_attention_heads
+        self.n_local_kv_heads = self.num_key_value_heads
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads
+        self.head_dim = config.head_dim
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.eps = config.rms_norm_eps
+
+    @staticmethod
+    def _feature_map(x):
+        return F.elu(x) + 1
+
+    def forward(self, x, position_embeddings, past_key_value=None, use_cache=False, attention_mask=None):
+        bsz, seq_len, _ = x.shape
+        xq = self.q_proj(x).view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        xk = self.k_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
+        xv = self.v_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
+        xq, xk = self.q_norm(xq), self.k_norm(xk)
+        cos, sin = position_embeddings
+        xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
+        if past_key_value is not None:
+            xk = torch.cat([past_key_value[0], xk], dim=1)
+            xv = torch.cat([past_key_value[1], xv], dim=1)
+        past_kv = (xk, xv) if use_cache else None
+        xq = self._feature_map(xq)
+        xk = self._feature_map(xk)
+        if self.n_rep > 1:
+            xk = repeat_kv(xk, self.n_rep)
+            xv = repeat_kv(xv, self.n_rep)
+        total_len = xk.shape[1]
+        xq_t = xq.transpose(1, 2)
+        xk_t = xk.transpose(1, 2)
+        xv_t = xv.transpose(1, 2)
+        if past_key_value is not None:
+            kv_global = torch.einsum('bhsd,bhsm->bhdm', xk_t, xv_t)
+            k_sum_global = xk_t.sum(dim=2)
+            output = torch.einsum('bhsd,bhdm->bhsm', xq_t, kv_global)
+            normalizer = torch.einsum('bhsd,bhsd->bhs', xq_t, k_sum_global.unsqueeze(2)).unsqueeze(-1)
+            normalizer = normalizer.clamp(min=self.eps)
+            output = output / normalizer
+        else:
+            kv_pairs = torch.einsum('bhsd,bhsm->bhsdm', xk_t, xv_t)
+            kv_cumsum = kv_pairs.cumsum(dim=2)
+            k_sum = xk_t.cumsum(dim=2)
+            output = torch.einsum('bhsd,bhsdm->bhsm', xq_t, kv_cumsum)
+            normalizer = torch.einsum('bhsd,bhsd->bhs', xq_t, k_sum).unsqueeze(-1)
+            normalizer = normalizer.clamp(min=self.eps)
+            output = output / normalizer
+        output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
+        output = self.resid_dropout(self.o_proj(output))
+        return output, past_kv
+
+
+class ALiBiAttention(nn.Module):
+    """ALiBi 注意力：用线性偏置替代位置编码，天然支持长度外推
+
+    不使用 RoPE，而是在注意力分数上加上与距离成正比的偏置。
+    偏置斜率固定为 2^(-8/n_heads * i)，无需学习。
+    """
+
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.num_key_value_heads = config.num_attention_heads if config.num_key_value_heads is None else config.num_key_value_heads
+        self.n_local_heads = config.num_attention_heads
+        self.n_local_kv_heads = self.num_key_value_heads
+        self.n_rep = self.n_local_heads // self.n_local_kv_heads
+        self.head_dim = config.head_dim
+        self.is_causal = True
+        self.q_proj = nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
+        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.dropout = config.dropout
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and config.flash_attn
+        slopes = 2.0 ** (-8.0 / self.n_local_heads * torch.arange(1, self.n_local_heads + 1))
+        self.register_buffer("alibi_slopes", slopes.view(1, self.n_local_heads, 1, 1), persistent=False)
+
+    def _get_alibi_bias(self, seq_len_q, seq_len_k, device):
+        dists = torch.arange(seq_len_k, device=device).float().unsqueeze(0) \
+                - torch.arange(seq_len_q, device=device).float().unsqueeze(1)
+        alibi = -self.alibi_slopes * dists.abs().unsqueeze(0)
+        causal_mask = torch.triu(torch.ones(seq_len_q, seq_len_k, device=device), diagonal=seq_len_k - seq_len_q + 1).bool()
+        alibi = alibi.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        return alibi
+
+    def forward(self, x, position_embeddings, past_key_value=None, use_cache=False, attention_mask=None):
+        bsz, seq_len, _ = x.shape
+        xq = self.q_proj(x).view(bsz, seq_len, self.n_local_heads, self.head_dim)
+        xk = self.k_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
+        xv = self.v_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
+        xq, xk = self.q_norm(xq), self.k_norm(xk)
+        if past_key_value is not None:
+            xk = torch.cat([past_key_value[0], xk], dim=1)
+            xv = torch.cat([past_key_value[1], xv], dim=1)
+        past_kv = (xk, xv) if use_cache else None
+        kv_len = xk.shape[1]
+        xq_4d = xq.transpose(1, 2)
+        xk_4d = repeat_kv(xk, self.n_rep).transpose(1, 2)
+        xv_4d = repeat_kv(xv, self.n_rep).transpose(1, 2)
+        alibi_bias = self._get_alibi_bias(seq_len, kv_len, xq_4d.device)
+        if attention_mask is not None and not torch.all(attention_mask == 1):
+            pad_mask = (1.0 - attention_mask[:, None, None, :]).to(dtype=xq_4d.dtype) * torch.finfo(xq_4d.dtype).min
+            alibi_bias = alibi_bias + pad_mask
+        if self.flash:
+            output = F.scaled_dot_product_attention(
+                xq_4d, xk_4d, xv_4d,
+                attn_mask=alibi_bias,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=False,
+            )
+        else:
+            scores = (xq_4d @ xk_4d.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            scores = scores + alibi_bias
+            output = self.attn_dropout(F.softmax(scores.float(), dim=-1).type_as(xq_4d)) @ xv_4d
+        output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
+        output = self.resid_dropout(self.o_proj(output))
+        return output, past_kv
+
+
 class FeedForward(nn.Module):
     def __init__(self, config: MiniMindConfig, intermediate_size: int = None):
         super().__init__()
@@ -347,6 +495,92 @@ class TTTFeedForward(FeedForward):
             return self.down_proj(Z)
 
 
+class LoRAFeedForward(FeedForward):
+    """在 FFN 的 gate_proj 和 up_proj 上加低秩旁路
+
+    旁路: hidden_size → r → intermediate_size，初始化 B=0 保证开始时无贡献。
+    仅增加约 2*r*(hidden_size+intermediate_size) 个参数。
+    """
+
+    def __init__(self, config: MiniMindConfig, intermediate_size: int = None, lora_r: int = 8):
+        super().__init__(config, intermediate_size)
+        self.lora_r = lora_r
+        self.gate_lora_A = nn.Linear(config.hidden_size, lora_r, bias=False)
+        self.gate_lora_B = nn.Linear(lora_r, self.gate_proj.out_features, bias=False)
+        self.up_lora_A = nn.Linear(config.hidden_size, lora_r, bias=False)
+        self.up_lora_B = nn.Linear(lora_r, self.up_proj.out_features, bias=False)
+        nn.init.zeros_(self.gate_lora_B.weight)
+        nn.init.zeros_(self.up_lora_B.weight)
+        self.lora_scale = 1.0
+
+    def forward(self, x):
+        gate = self.act_fn(self.gate_proj(x) + self.lora_scale * self.gate_lora_B(self.gate_lora_A(x)))
+        up = self.up_proj(x) + self.lora_scale * self.up_lora_B(self.up_lora_A(x))
+        return self.down_proj(gate * up)
+
+
+class MambaLayer(nn.Module):
+    """简化版 Mamba SSM 层，替代 Attention
+
+    使用选择性状态空间模型 (S6) 的核心递推结构：
+    h_t = exp(Δ_t * A) * h_{t-1} + Δ_t * B_t * x_t
+    y_t = C_t * h_t + D * x_t
+
+    训练时使用并行扫描，推理时 O(1) 递推。
+    """
+
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.expand_factor = 2
+        self.d_inner = self.hidden_size * self.expand_factor
+        self.d_state = 64
+        self.dt_rank = max(self.hidden_size // 16, 16)
+        self.in_proj = nn.Linear(config.hidden_size, self.d_inner * 2, bias=False)
+        self.conv1d = nn.Conv1d(self.d_inner, self.d_inner, kernel_size=3,
+                                padding=1, groups=self.d_inner)
+        self.x_proj = nn.Linear(self.d_inner, self.dt_rank + self.d_state * 2, bias=False)
+        self.dt_proj = nn.Linear(self.dt_rank, self.d_inner, bias=True)
+        A = torch.arange(1, self.d_state + 1, dtype=torch.float32).unsqueeze(0).expand(self.d_inner, -1).clone()
+        self.A_log = nn.Parameter(torch.log(A))
+        self.D = nn.Parameter(torch.ones(self.d_inner))
+        self.out_proj = nn.Linear(self.d_inner, config.hidden_size, bias=False)
+        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+
+    def forward(self, x, position_embeddings=None, past_key_value=None, use_cache=False, attention_mask=None):
+        _ = position_embeddings
+        residual = x
+        x = self.norm(x)
+        batch, seq_len, _ = x.shape
+        xz = self.in_proj(x)
+        x_proj, z = xz.chunk(2, dim=-1)
+        x_proj = self.conv1d(x_proj.transpose(1, 2)).transpose(1, 2)
+        x_proj = F.silu(x_proj)
+        A = -torch.exp(self.A_log)
+        dtBC = self.x_proj(x_proj)
+        dt, B, C = dtBC.split([self.dt_rank, self.d_state, self.d_state], dim=-1)
+        dt = F.softplus(self.dt_proj(dt))
+        y = self._ssm_scan(x_proj, dt, A, B, C)
+        y = y + self.D.unsqueeze(0).unsqueeze(0) * x_proj
+        output = y * F.silu(z)
+        output = self.out_proj(output)
+        return output + residual, (x.new_zeros(0, 0, 0, 0), x.new_zeros(0, 0, 0, 0))
+
+    def _ssm_scan(self, x, dt, A, B, C):
+        batch, seq_len, d_inner = x.shape
+        d_state = A.shape[1]
+        h = x.new_zeros(batch, d_inner, d_state)
+        ys = []
+        for t in range(seq_len):
+            dt_t = dt[:, t, :].unsqueeze(-1)
+            dA = torch.exp(dt_t * A)
+            dBx = dt_t * B[:, t, :].unsqueeze(1) * x[:, t, :].unsqueeze(-1)
+            h = dA * h + dBx
+            y = torch.einsum('bdn,bn->bd', h, C[:, t, :])
+            ys.append(y)
+        return torch.stack(ys, dim=1)
+
+
 class MTPHead(nn.Module):
     """Multi-Token Prediction 额外预测头
 
@@ -410,29 +644,51 @@ class MiniMindBlock(nn.Module):
     def __init__(self, layer_id: int, config: MiniMindConfig, use_ttt: bool = False):
         super().__init__()
         self.layer_id = layer_id
-        self.self_attn = Attention(config)
+        self.config = config
+        self.parallel_attn_ffn = config.parallel_attn_ffn
+        attn_type = getattr(config, 'attention_type', 'standard')
+        if getattr(config, 'mamba_hybrid', False) and layer_id < int(config.num_hidden_layers * getattr(config, 'mamba_ratio', 0.5)):
+            self.self_attn = MambaLayer(config)
+        elif attn_type == 'linear':
+            self.self_attn = LinearAttention(config)
+        elif attn_type == 'alibi':
+            self.self_attn = ALiBiAttention(config)
+        else:
+            self.self_attn = Attention(config)
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         if config.use_moe:
             self.mlp = MOEFeedForward(config)
         elif use_ttt:
             self.mlp = TTTFeedForward(config)
+        elif getattr(config, 'lora_ffn', False):
+            self.mlp = LoRAFeedForward(config, lora_r=getattr(config, 'lora_ffn_r', 8))
         else:
             self.mlp = FeedForward(config)
 
     def forward(self, hidden_states, position_embeddings, past_key_value=None, use_cache=False, attention_mask=None, use_ttt=False):
-        residual = hidden_states
-        hidden_states, present_key_value = self.self_attn(
-            self.input_layernorm(hidden_states), position_embeddings,
-            past_key_value, use_cache, attention_mask
-        )
-        hidden_states += residual
-        # TTT 层需要传入 use_ttt 标志
-        if isinstance(self.mlp, TTTFeedForward):
-            hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states), use_ttt=use_ttt)
+        if self.parallel_attn_ffn:
+            normed = self.input_layernorm(hidden_states)
+            attn_out, present_key_value = self.self_attn(
+                normed, position_embeddings, past_key_value, use_cache, attention_mask
+            )
+            if isinstance(self.mlp, TTTFeedForward):
+                mlp_out = self.mlp(self.post_attention_layernorm(hidden_states), use_ttt=use_ttt)
+            else:
+                mlp_out = self.mlp(self.post_attention_layernorm(hidden_states))
+            return hidden_states + attn_out + mlp_out, present_key_value
         else:
-            hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
-        return hidden_states, present_key_value
+            residual = hidden_states
+            hidden_states, present_key_value = self.self_attn(
+                self.input_layernorm(hidden_states), position_embeddings,
+                past_key_value, use_cache, attention_mask
+            )
+            hidden_states += residual
+            if isinstance(self.mlp, TTTFeedForward):
+                hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states), use_ttt=use_ttt)
+            else:
+                hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
+            return hidden_states, present_key_value
 
 class MiniMindModel(nn.Module):
     def __init__(self, config: MiniMindConfig):
@@ -591,7 +847,8 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
         past_key_values = kwargs.pop("past_key_values", None)
         finished = torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device)
         ttt_step_counter = 0
-        use_kv_cache = use_cache and not use_ttt
+        has_linear_or_mamba = getattr(self.config, 'attention_type', 'standard') == 'linear' or getattr(self.config, 'mamba_hybrid', False)
+        use_kv_cache = use_cache and not use_ttt and not has_linear_or_mamba
         if use_kv_cache:
             kv_cache = KVCache(
                 n_layers=self.config.num_hidden_layers,
