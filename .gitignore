@@ -1,0 +1,33 @@
+__pycache__/
+*.pyc
+.DS_Store
+out
+website/
+docs-minimind/
+
+# Data files (too large for GitHub)
+dataset/*.jsonl
+dataset/*.parquet
+dataset/*.tar
+dataset/*.json
+
+# Model weights
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Python
+*.egg-info/
+dist/
+build/
+.venv/
+
+# OS
+Thumbs.db
