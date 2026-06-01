@@ -35,7 +35,7 @@
 * MiniMind 系列极其轻量，主线最小版本体积约为 GPT-3 的 $\frac{1}{2700}$，力求让普通个人 GPU 也能快速完成训练与复现。
 * 项目同时开源了大模型的极简结构与完整训练链路，覆盖 MoE、数据清洗、预训练（Pretrain）、监督微调（SFT）、LoRA、RLHF（DPO）、RLAIF（PPO / GRPO / CISPO）、Tool Use、Agentic RL、自适应思考、模型蒸馏、知识蒸馏（OPD）等全过程代码。
 * MiniMind 同时拓展了视觉模态模型 [MiniMind-V](https://github.com/jingyaogong/minimind-v)、多模态 Omni 模型 MiniMind-O（已在本仓库实现为 `model/model_omni.py`）、扩散语言模型（MiniMind-dLM）、线性模型（MiniMind-Linear），详见 [Discussion](https://github.com/jingyaogong/minimind/discussions)。
-* 🔥 **MiniMind-5**：在 MiniMind-3 基础上集成了 In-Place TTT（推理时训练）、跨层参数共享、多 Token 预测（MTP）、Muon 优化器（NS 正交归一化）、mHC 流形约束超连接、CSA 压缩稀疏注意力等 DeepSeek V4 风格的高级架构特性。配置和参数已内置在主模型代码中，通过 `config` 参数即可启用。
+* 🔥 **MiniMind-5**：在 MiniMind-3 基础上集成了 In-Place TTT（推理时训练）、跨层参数共享、多 Token 预测（MTP）、Muon 优化器（NS 正交归一化）、mHC 流形约束超连接、CSA 压缩稀疏注意力、MSA 稀疏注意力（MiniMax M3 风格）等高级架构特性。配置和参数已内置在主模型代码中，通过 `config` 参数即可启用。
 * 项目所有核心算法代码均从 0 使用 PyTorch 原生实现，不依赖第三方库提供的高层抽象接口。
 * 这不仅是一个大语言模型全阶段开源复现项目，也是一套面向 LLM 入门与实践的教程。
 * 希望此项目能为更多人提供一个可复现、可理解、可扩展的起点，一起感受创造的乐趣，并推动更广泛 AI 社区的进步。
@@ -85,7 +85,7 @@
 
 #### 🎉 本项目包含以下内容
 
-- 提供完整的 MiniMind-LLM 结构代码（Dense + MoE），当前主线结构对齐 `Qwen3 / Qwen3-MoE` 生态。高级架构模块（mHC + CSA）见 `model/model_advanced.py`，全模态模型见 `model/model_omni.py`。
+- 提供完整的 MiniMind-LLM 结构代码（Dense + MoE），当前主线结构对齐 `Qwen3 / Qwen3-MoE` 生态。高级架构模块（mHC + CSA + MSA）见 `model/model_advanced.py`，全模态模型见 `model/model_omni.py`。
 - 提供 Tokenizer 与分词器训练代码，支持 `<tool_call>`、`<tool_response>`、`<think>` 等模板标记。
 - 覆盖 Pretrain、SFT、LoRA、RLHF-DPO、RLAIF（PPO / GRPO / CISPO）、Tool Use、Agentic RL、自适应思考与模型蒸馏等完整训练流程。
 - 提供全阶段开源数据，覆盖收集、蒸馏、清洗与去重后的高质量数据集。
@@ -100,6 +100,7 @@
 - 支持 **多 Token 预测（MTP）**：在 lm_head 后追加预测头，每个预测头学习未来 token 分布，MTP loss 作为辅助损失增强上下文感知。
 - 支持 **Muon 优化器**：基于动量梯度 + Newton-Schulz 正交归一化，节省显存并提升收敛效率，通过 `--optimizer muon` 一键切换。
 - 支持 **mHC 流形约束超连接 + CSA 压缩稀疏注意力**：DeepSeek V4 风格的高级架构模块（`model/model_advanced.py`），支持百万级长上下文的高效注意力。
+- 支持 **MSA 稀疏注意力（MiniMax M3 风格）**：两阶段稀疏注意力（Index Branch + Sparse Branch），通过块级 TopK 选择实现 GQA 组共享索引，显著降低长上下文注意力计算量。
 - 🧪 **Meta-TTT 元学习**：FOMAML 一阶近似训练 TTT predictor，让模型学会"如何在推理时自更新"（独立训练脚本 `trainer/train_meta_ttt.py`）。
 - 🧪 **诚实训练 + 置信度校准**：替代传统 reward hacking，基于熵值计算置信度、检测诚实放弃模式、分层奖励，已集成到 GRPO / PPO / Agent RL 训练中。
 - 🧪 **全模态 Omni 模型**：基于 Thinker-Talker 双路径架构，同时处理文本 / 音频 / 视觉三模态，支持端到端文生音、实时 VAD 打断。
@@ -130,7 +131,7 @@ minimind/
 │   ├── model_minimind.py            # 核心 LLM：MiniMindConfig, MiniMindForCausalLM,
 │   │                                #   MiniMindBlock, TTTFeedForward, MTPHead, MoE,
 │   │                                #   KVCache (预分配), Attention (FA2/SDPA/Manual 三级路由)
-│   ├── model_advanced.py            # DeepSeek V4 高级模块：mHC 流形约束超连接 + CSA 压缩注意力
+│   ├── model_advanced.py            # 高级模块：mHC 流形约束超连接 + CSA 压缩注意力 + MSA 稀疏注意力
 │   ├── model_omni.py                # 全模态 Thinker-Talker 双路径模型
 │   ├── model_lora.py                # LoRA 微调模块
 │   ├── minimind_rag.py              # RAG 检索增强生成
@@ -185,7 +186,9 @@ minimind/
 │   └── web_demo.html                # 前端界面
 │
 ├── tests/                           # 测试
-│   └── test_all.py                  # 统一测试：27 项覆盖构建/前向/TTT/MHC+CSA/Muon/OPD/生成
+│   ├── test_all.py                  # 统一测试：27 项覆盖构建/前向/TTT/MHC+CSA/MSA/Muon/OPD/生成
+│   ├── test_new_arch.py             # 新架构测试：54 项覆盖 Linear/ALiBi/LoRA/Mamba/MSA
+│   └── benchmark_performance.py     # 性能基准：19 项含长上下文压力测试
 │
 ├── mini-RAG/                        # 外挂 RAG 系统 (LightRAG)
 ├── minimind-3/                      # MiniMind-3 预训练模型发布包
@@ -227,6 +230,8 @@ minimind/
 - **多 Token 预测（MTP）**：新增 `MTPHead` 模块，在 lm_head 后追加 N 个预测头，MTP loss 自动加权到总 loss。
 - **Muon 优化器**：基于动量梯度 + Newton-Schulz 正交归一化（DeepSeek V4 风格），`--optimizer muon` 一键切换，节省约 50% 优化器状态显存。见 `trainer/trainer_utils.py`。
 - **mHC + CSA 高级架构**：新增 `model/model_advanced.py`，集成流形约束超连接（mHC）和压缩稀疏注意力（CSA），支持百万级长上下文高效注意力。
+- **MSA 稀疏注意力**：移植 MiniMax M3 的两阶段稀疏注意力机制（Index Branch + Sparse Branch），支持 GQA 组共享索引、块级 TopK 选择、短序列 fallback，通过 `msa_enabled=True` 一键启用。
+- **长上下文压力测试**：新增 5 项长上下文专项基准测试（[15]-[19]），覆盖 MSA vs Standard vs CSA 多序列长度对比、生成压力、稀疏度分析、内存压力、梯度稳定性。
 - **Meta-TTT 元学习**：基于 FOMAML 一阶近似，外循环训练 TTT predictor。见 `trainer/train_meta_ttt.py`。
 - **诚实训练与置信度校准**：新增 `trainer/honest_training.py`，通过生成熵值计算置信度、检测诚实放弃模式、分层奖励。已集成到 GRPO / PPO / Agent RL 训练中。
 - **全模态 Omni 模型**：新增 `model/model_omni.py` + `dataset/omni_dataset.py` + `trainer/train_sft_omni.py`。基于 Thinker-Talker 双路径架构，支持文本 / 音频 / 视觉三模态，支持端到端文生音、实时 VAD 打断。
@@ -820,11 +825,12 @@ pip install flash-attn --no-build-isolation
 
 #### 高级模块
 
-`model/model_advanced.py` 提供基于 DeepSeek V4 的可插拔高级注意力模块：
+`model/model_advanced.py` 提供可插拔高级注意力模块：
 
 - **MHC_CSABlock**：集成 mHC 流形约束超连接 + CSA 压缩稀疏注意力的 Transformer Block，兼容 `MiniMindBlock` 接口
 - **MHCConnection**：多流残差 + Sinkhorn-Knopp 双随机投影，确保深层不爆炸
 - **CompressedSparseAttention**：KV 压缩 → Lightning Indexer → Core Attention，长上下文 FLOPs 大幅降低
+- **MiniMaxSparseAttention**：MiniMax M3 风格的两阶段稀疏注意力（Index Branch + Sparse Branch），GQA 组共享索引，块级 TopK 选择
 
 #### 优化器
 
@@ -973,18 +979,29 @@ config = MiniMindConfig(mtp_num_heads=2, mtp_loss_weight=0.1)
 python trainer/train_full_sft.py --optimizer muon --learning_rate 1e-3
 ```
 
-#### mHC + CSA 高级注意力（`model/model_advanced.py`）
+#### mHC + CSA + MSA 高级注意力（`model/model_advanced.py`）
 
-基于 DeepSeek V4 论文 (arxiv:2512.24880)：
+基于 DeepSeek V4 论文 (arxiv:2512.24880) 与 MiniMax M3：
 
 - **mHC 流形约束超连接**：多流残差 + Sinkhorn-Knopp 双随机投影，确保深层不爆炸
 - **CSA 压缩稀疏注意力**：KV 分块压缩 → Lightning Indexer 选 Top-k → Core Attention，百万上下文 FLOPs 仅需标准注意力的 27%
+- **MSA 稀疏注意力（MiniMax M3）**：两阶段设计 — Index Branch（低维索引投影 + Block Max Pool + TopK 块选择）+ Sparse Branch（GQA 组共享索引 + 块级 KV 选择 + 因果掩码），短序列自动 fallback 到标准注意力
 
 ```python
-from model.model_advanced import MHC_CSABlock
+from model.model_advanced import MHC_CSABlock, MiniMaxSparseAttention
 
 block = MHC_CSABlock(layer_id=0, config=config, use_csa=True, num_streams=2)
 out, cache = block(hidden_states, position_embeddings)
+
+# MSA 通过 config 启用
+config = MiniMindConfig(
+    msa_enabled=True,
+    msa_block_size=64,
+    msa_topk_ratio=0.06,
+    msa_idx_dim=128,
+    msa_fallback_len=256,
+)
+model = MiniMindForCausalLM(config)
 ```
 
 ---
@@ -992,8 +1009,19 @@ out, cache = block(hidden_states, position_embeddings)
 ### 运行测试
 
 ```bash
+# 功能测试
 python tests/test_all.py
-# 27 项测试覆盖：模型构建、前向、TTT、MHC+CSA、Muon、OPD、生成
+# 27 项测试覆盖：模型构建、前向、TTT、MHC+CSA、MSA、Muon、OPD、生成
+
+# 新架构测试
+python tests/test_new_arch.py
+# 54 项测试覆盖：Linear Attention、ALiBi、LoRA-FFN、Mamba Hybrid、MSA
+
+# 性能基准测试（含长上下文压力测试）
+python tests/benchmark_performance.py
+# 19 项基准：前向吞吐、生成、KV Cache、TTT、注意力对比、MoE、参数共享、
+# MHC+CSA、LoRA、Mamba、内存、训练、Muon、MSA vs Standard vs CSA 长上下文、
+# MSA 生成压力、稀疏度分析、内存压力、梯度稳定性
 ```
 
 ---
@@ -2386,7 +2414,7 @@ python llmexport.py --path /path/to/模型路径/ --export mnn --hqq --dst_path 
 
 * 🧪 [trainer/train_meta_ttt.py](./trainer/train_meta_ttt.py) — Meta-TTT 元学习训练脚本
 
-* [model/model_advanced.py](./model/model_advanced.py) — mHC + CSA 高级架构模块
+* [model/model_advanced.py](./model/model_advanced.py) — mHC + CSA + MSA 高级架构模块
 
 * [tests/test_all.py](./tests/test_all.py) — 统一测试（27 项：TTT/MTP/MHC+CSA/Muon/OPD/生成）
 

@@ -68,7 +68,12 @@ class MiniMindConfig(PretrainedConfig):
         self.lora_ffn_r = kwargs.get("lora_ffn_r", 8)
         ### Mamba hybrid: 底层 Mamba + 顶层 Attention
         self.mamba_hybrid = kwargs.get("mamba_hybrid", False)
-        self.mamba_ratio = kwargs.get("mamba_ratio", 0.5)  # 底层 Mamba 占比
+        self.mamba_ratio = kwargs.get("mamba_ratio", 0.5)
+        self.msa_enabled = kwargs.get("msa_enabled", False)
+        self.msa_block_size = kwargs.get("msa_block_size", 64)
+        self.msa_topk_ratio = kwargs.get("msa_topk_ratio", 0.06)
+        self.msa_idx_dim = kwargs.get("msa_idx_dim", 128)
+        self.msa_fallback_len = kwargs.get("msa_fallback_len", 256)
 
 # 🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏🌎🌍🌏
 #                                     MiniMind Model
@@ -80,9 +85,7 @@ class RMSNorm(torch.nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        x_float = x.float()
-        x_normed = x_float * torch.rsqrt(x_float.pow(2).mean(-1, keepdim=True) + self.eps)
-        return (self.weight * x_normed).type_as(x)
+        return self.weight * x * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + self.eps).to(x.dtype)
 
 def precompute_freqs_cis(dim: int, end: int = int(32 * 1024), rope_base: float = 1e6, rope_scaling: dict = None):
     freqs, attn_factor = 1.0 / (rope_base ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim)), 1.0
@@ -108,11 +111,10 @@ def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
     half = q.shape[-1] // 2
     q1, q2 = q[..., :half], q[..., half:]
     k1, k2 = k[..., :half], k[..., half:]
-    q_embed = (q1 * cos[..., :half] - q2 * sin[..., :half]).to(q.dtype)
-    q_embed = torch.cat([q_embed, (q2 * cos[..., :half] + q1 * sin[..., :half]).to(q.dtype)], dim=-1)
-    k_embed = (k1 * cos[..., :half] - k2 * sin[..., :half]).to(k.dtype)
-    k_embed = torch.cat([k_embed, (k2 * cos[..., :half] + k1 * sin[..., :half]).to(k.dtype)], dim=-1)
-    return q_embed, k_embed
+    cos_h, sin_h = cos[..., :half], sin[..., :half]
+    q_out = torch.cat([q1 * cos_h - q2 * sin_h, q2 * cos_h + q1 * sin_h], dim=-1)
+    k_out = torch.cat([k1 * cos_h - k2 * sin_h, k2 * cos_h + k1 * sin_h], dim=-1)
+    return q_out, k_out
 
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     bs, slen, num_key_value_heads, head_dim = x.shape
@@ -136,7 +138,6 @@ class KVCache:
         self.len = [0] * n_layers
 
     def update(self, layer_idx, new_k, new_v):
-        """Insert new_k/v at the current position, return the full cached K/V."""
         cur_len = self.len[layer_idx]
         new_len = cur_len + new_k.shape[1]
         self.k_cache[layer_idx][:, cur_len:new_len].copy_(new_k)
@@ -145,12 +146,10 @@ class KVCache:
         return self.k_cache[layer_idx][:, :new_len], self.v_cache[layer_idx][:, :new_len]
 
     def get(self, layer_idx):
-        """Get cached K/V up to current length."""
         cur_len = self.len[layer_idx]
         return self.k_cache[layer_idx][:, :cur_len], self.v_cache[layer_idx][:, :cur_len]
 
     def to_legacy_format(self):
-        """Convert to the list-of-tuples format expected by existing code."""
         return [(self.k_cache[i][:, :self.len[i]], self.v_cache[i][:, :self.len[i]]) for i in range(self.n_layers)]
 
 class Attention(nn.Module):
@@ -183,36 +182,40 @@ class Attention(nn.Module):
         xq, xk = self.q_norm(xq), self.k_norm(xk)
         cos, sin = position_embeddings
         xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
-        if past_key_value is not None:
-            xk = torch.cat([past_key_value[0], xk], dim=1)
-            xv = torch.cat([past_key_value[1], xv], dim=1)
-        past_kv = (xk, xv) if use_cache else None
-        kv_len = xk.shape[1]
+        is_kv_cache = isinstance(past_key_value, tuple) and len(past_key_value) == 2 and isinstance(past_key_value[0], KVCache)
+        if is_kv_cache:
+            full_k, full_v = past_key_value[0].update(past_key_value[1], xk, xv)
+        elif past_key_value is not None:
+            full_k = torch.cat([past_key_value[0], xk], dim=1)
+            full_v = torch.cat([past_key_value[1], xv], dim=1)
+        else:
+            full_k, full_v = xk, xv
+        past_kv = (xk, xv) if use_cache and not is_kv_cache else None
+        kv_len = full_k.shape[1]
         xq_4d = xq.transpose(1, 2)
-        xk_4d = repeat_kv(xk, self.n_rep).transpose(1, 2)
-        xv_4d = repeat_kv(xv, self.n_rep).transpose(1, 2)
+        xk_4d = repeat_kv(full_k, self.n_rep).transpose(1, 2)
+        xv_4d = repeat_kv(full_v, self.n_rep).transpose(1, 2)
 
-        # Flash Attention 2 path (training: full seq, inference: single token with kv cache)
         if self.use_flash_attn2 and seq_len > 1 and self.training:
             output = flash_attn_func(
                 xq_4d, xk_4d, xv_4d,
                 dropout_p=self.dropout if self.training else 0.0,
                 causal=True,
             )
-        # PyTorch SDPA path (supports KV cache via attention_mask)
         elif self.flash:
             attn_mask = None
-            if attention_mask is not None and not torch.all(attention_mask == 1):
-                attn_mask = attention_mask[:, None, None, :].to(dtype=xq_4d.dtype)
-                attn_mask = (1.0 - attn_mask) * torch.finfo(xq_4d.dtype).min
-            is_causal = self.is_causal and (seq_len > 1) and (past_key_value is None) and (attention_mask is None or torch.all(attention_mask == 1))
+            is_causal = self.is_causal and seq_len > 1 and past_key_value is None and attention_mask is None
+            if attention_mask is not None:
+                if not torch.all(attention_mask == 1):
+                    attn_mask = (1.0 - attention_mask[:, None, None, :].to(dtype=xq_4d.dtype)) * torch.finfo(xq_4d.dtype).min
+                else:
+                    is_causal = self.is_causal and seq_len > 1 and past_key_value is None
             output = F.scaled_dot_product_attention(
                 xq_4d, xk_4d, xv_4d,
                 attn_mask=attn_mask,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=is_causal,
             )
-        # Fallback: manual attention
         else:
             scores = (xq_4d @ xk_4d.transpose(-2, -1)) / math.sqrt(self.head_dim)
             if self.is_causal and seq_len > 1:
@@ -261,32 +264,44 @@ class LinearAttention(nn.Module):
         xq, xk = self.q_norm(xq), self.k_norm(xk)
         cos, sin = position_embeddings
         xq, xk = apply_rotary_pos_emb(xq, xk, cos, sin)
-        if past_key_value is not None:
+        is_kv_cache = isinstance(past_key_value, tuple) and len(past_key_value) == 2 and isinstance(past_key_value[0], KVCache)
+        if is_kv_cache:
+            kv_cache_obj, layer_idx = past_key_value
+            full_k, full_v = kv_cache_obj.update(layer_idx, xk, xv)
+        elif past_key_value is not None:
             xk = torch.cat([past_key_value[0], xk], dim=1)
             xv = torch.cat([past_key_value[1], xv], dim=1)
-        past_kv = (xk, xv) if use_cache else None
+            full_k, full_v = xk, xv
+        else:
+            full_k, full_v = xk, xv
+        past_kv = (xk, xv) if use_cache and not is_kv_cache else None
         xq = self._feature_map(xq)
-        xk = self._feature_map(xk)
+        full_k_feat = self._feature_map(full_k)
         if self.n_rep > 1:
-            xk = repeat_kv(xk, self.n_rep)
-            xv = repeat_kv(xv, self.n_rep)
-        total_len = xk.shape[1]
+            full_k_feat = repeat_kv(full_k_feat, self.n_rep)
+            full_v_rep = repeat_kv(full_v, self.n_rep)
+        else:
+            full_v_rep = full_v
+        total_len = full_k.shape[1]
         xq_t = xq.transpose(1, 2)
-        xk_t = xk.transpose(1, 2)
-        xv_t = xv.transpose(1, 2)
-        if past_key_value is not None:
-            kv_global = torch.einsum('bhsd,bhsm->bhdm', xk_t, xv_t)
+        xk_t = full_k_feat.transpose(1, 2)
+        xv_t = full_v_rep.transpose(1, 2)
+        if past_key_value is not None and not is_kv_cache:
+            b, h, sq, d = xq_t.shape
+            _, _, sk, _ = xk_t.shape
+            kv_global = torch.bmm(xk_t.reshape(b * h, sk, d).transpose(1, 2), xv_t.reshape(b * h, sk, d))
+            kv_global = kv_global.reshape(b, h, d, d)
             k_sum_global = xk_t.sum(dim=2)
-            output = torch.einsum('bhsd,bhdm->bhsm', xq_t, kv_global)
-            normalizer = torch.einsum('bhsd,bhsd->bhs', xq_t, k_sum_global.unsqueeze(2)).unsqueeze(-1)
+            output = torch.bmm(xq_t.reshape(b * h, sq, d), kv_global.reshape(b * h, d, d))
+            output = output.reshape(b, h, sq, d).transpose(2, 3)
+            normalizer = (xq_t * k_sum_global.unsqueeze(2)).sum(-1).unsqueeze(-1)
             normalizer = normalizer.clamp(min=self.eps)
             output = output / normalizer
         else:
-            kv_pairs = torch.einsum('bhsd,bhsm->bhsdm', xk_t, xv_t)
-            kv_cumsum = kv_pairs.cumsum(dim=2)
+            kv_cumsum = torch.cumsum(xk_t.unsqueeze(-1) * xv_t.unsqueeze(-2), dim=2)
             k_sum = xk_t.cumsum(dim=2)
-            output = torch.einsum('bhsd,bhsdm->bhsm', xq_t, kv_cumsum)
-            normalizer = torch.einsum('bhsd,bhsd->bhs', xq_t, k_sum).unsqueeze(-1)
+            output = (xq_t.unsqueeze(-2) @ kv_cumsum).squeeze(-2)
+            normalizer = (xq_t * k_sum).sum(-1).unsqueeze(-1)
             normalizer = normalizer.clamp(min=self.eps)
             output = output / normalizer
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
@@ -326,8 +341,8 @@ class ALiBiAttention(nn.Module):
         dists = torch.arange(seq_len_k, device=device).float().unsqueeze(0) \
                 - torch.arange(seq_len_q, device=device).float().unsqueeze(1)
         alibi = -self.alibi_slopes * dists.abs().unsqueeze(0)
-        causal_mask = torch.triu(torch.ones(seq_len_q, seq_len_k, device=device), diagonal=seq_len_k - seq_len_q + 1).bool()
-        alibi = alibi.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        causal_mask = torch.triu(torch.ones(seq_len_q, seq_len_k, device=device, dtype=torch.bool), diagonal=seq_len_k - seq_len_q + 1)
+        alibi.masked_fill_(causal_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
         return alibi
 
     def forward(self, x, position_embeddings, past_key_value=None, use_cache=False, attention_mask=None):
@@ -336,14 +351,21 @@ class ALiBiAttention(nn.Module):
         xk = self.k_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
         xv = self.v_proj(x).view(bsz, seq_len, self.n_local_kv_heads, self.head_dim)
         xq, xk = self.q_norm(xq), self.k_norm(xk)
-        if past_key_value is not None:
+        is_kv_cache = isinstance(past_key_value, tuple) and len(past_key_value) == 2 and isinstance(past_key_value[0], KVCache)
+        if is_kv_cache:
+            kv_cache_obj, layer_idx = past_key_value
+            full_k, full_v = kv_cache_obj.update(layer_idx, xk, xv)
+        elif past_key_value is not None:
             xk = torch.cat([past_key_value[0], xk], dim=1)
             xv = torch.cat([past_key_value[1], xv], dim=1)
-        past_kv = (xk, xv) if use_cache else None
-        kv_len = xk.shape[1]
+            full_k, full_v = xk, xv
+        else:
+            full_k, full_v = xk, xv
+        past_kv = (xk, xv) if use_cache and not is_kv_cache else None
+        kv_len = full_k.shape[1]
         xq_4d = xq.transpose(1, 2)
-        xk_4d = repeat_kv(xk, self.n_rep).transpose(1, 2)
-        xv_4d = repeat_kv(xv, self.n_rep).transpose(1, 2)
+        xk_4d = repeat_kv(full_k, self.n_rep).transpose(1, 2)
+        xv_4d = repeat_kv(full_v, self.n_rep).transpose(1, 2)
         alibi_bias = self._get_alibi_bias(seq_len, kv_len, xq_4d.device)
         if attention_mask is not None and not torch.all(attention_mask == 1):
             pad_mask = (1.0 - attention_mask[:, None, None, :]).to(dtype=xq_4d.dtype) * torch.finfo(xq_4d.dtype).min
@@ -561,7 +583,7 @@ class MambaLayer(nn.Module):
         dt, B, C = dtBC.split([self.dt_rank, self.d_state, self.d_state], dim=-1)
         dt = F.softplus(self.dt_proj(dt))
         y = self._ssm_scan(x_proj, dt, A, B, C)
-        y = y + self.D.unsqueeze(0).unsqueeze(0) * x_proj
+        y = y + self.D * x_proj
         output = y * F.silu(z)
         output = self.out_proj(output)
         return output + residual, (x.new_zeros(0, 0, 0, 0), x.new_zeros(0, 0, 0, 0))
@@ -569,15 +591,13 @@ class MambaLayer(nn.Module):
     def _ssm_scan(self, x, dt, A, B, C):
         batch, seq_len, d_inner = x.shape
         d_state = A.shape[1]
+        dA = torch.exp(dt.unsqueeze(-1) * A)
+        dBx = dt.unsqueeze(-1) * B.unsqueeze(2) * x.unsqueeze(-1)
         h = x.new_zeros(batch, d_inner, d_state)
         ys = []
         for t in range(seq_len):
-            dt_t = dt[:, t, :].unsqueeze(-1)
-            dA = torch.exp(dt_t * A)
-            dBx = dt_t * B[:, t, :].unsqueeze(1) * x[:, t, :].unsqueeze(-1)
-            h = dA * h + dBx
-            y = torch.einsum('bdn,bn->bd', h, C[:, t, :])
-            ys.append(y)
+            h = dA[:, t] * h + dBx[:, t]
+            ys.append((h * C[:, t, :].unsqueeze(1)).sum(-1))
         return torch.stack(ys, dim=1)
 
 
@@ -649,6 +669,9 @@ class MiniMindBlock(nn.Module):
         attn_type = getattr(config, 'attention_type', 'standard')
         if getattr(config, 'mamba_hybrid', False) and layer_id < int(config.num_hidden_layers * getattr(config, 'mamba_ratio', 0.5)):
             self.self_attn = MambaLayer(config)
+        elif getattr(config, 'msa_enabled', False):
+            from model.model_advanced import MiniMaxSparseAttention
+            self.self_attn = MiniMaxSparseAttention(config)
         elif attn_type == 'linear':
             self.self_attn = LinearAttention(config)
         elif attn_type == 'alibi':
@@ -743,15 +766,15 @@ class MiniMindModel(nn.Module):
         else:
             start_pos = past_key_values.len[0]
         hidden_states = self.dropout(self.embed_tokens(input_ids))
-        if self.freqs_cos[0, 0] == 0:
-            freqs_cos, freqs_sin = precompute_freqs_cis(dim=self.config.head_dim, end=self.config.max_position_embeddings, rope_base=self.config.rope_theta, rope_scaling=self.config.rope_scaling)
-            self.freqs_cos, self.freqs_sin = freqs_cos.to(hidden_states.device), freqs_sin.to(hidden_states.device)
+        if self.freqs_cos.device != hidden_states.device:
+            self.freqs_cos = self.freqs_cos.to(hidden_states.device)
+            self.freqs_sin = self.freqs_sin.to(hidden_states.device)
         position_embeddings = (self.freqs_cos[start_pos:start_pos + seq_length], self.freqs_sin[start_pos:start_pos + seq_length])
         presents = []
         for layer_idx in range(self.num_hidden_layers):
             layer = self._get_layer(layer_idx)
             if use_kv_cache:
-                past_kv_for_layer = past_key_values.get(layer_idx)
+                past_kv_for_layer = (past_key_values, layer_idx)
             else:
                 past_kv_for_layer = past_key_values[layer_idx]
             hidden_states, present = layer(
@@ -762,12 +785,7 @@ class MiniMindModel(nn.Module):
                 attention_mask=attention_mask,
                 use_ttt=use_ttt,
             )
-            if use_kv_cache and use_cache:
-                new_k, new_v = present
-                past_key_values.update(layer_idx, new_k, new_v)
-                presents.append(present)
-            else:
-                presents.append(present)
+            presents.append(present)
         hidden_states = self.norm(hidden_states)
         # 计算 aux_loss（兼容参数共享）
         if self.unique_layers is not None:
@@ -870,9 +888,11 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 past_len = input_ids.shape[1]
             else:
                 past_len = 0
+            next_token = None
             for _ in range(max_new_tokens):
                 if use_kv_cache and past_len > 0:
-                    outputs = self.forward(input_ids[:, -1:], None, kv_cache, use_cache=True, use_ttt=False, **kwargs)
+                    cur_input = next_token if next_token is not None else input_ids[:, -1:]
+                    outputs = self.forward(cur_input, None, kv_cache, use_cache=True, use_ttt=False, **kwargs)
                 else:
                     do_ttt = use_ttt and (ttt_step_counter % ttt_interval == 0 and ttt_step_counter > 0)
                     if do_ttt and use_cache:
@@ -887,14 +907,16 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 if repetition_penalty != 1.0:
                     for i in range(input_ids.shape[0]):
                         seen = torch.unique(input_ids[i]); score = logits[i, seen]; logits[i, seen] = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
-                if top_k > 0: 
-                    logits[logits < torch.topk(logits, top_k)[0][..., -1, None]] = -float('inf')
+                if top_k > 0:
+                    topk_values = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < topk_values.values[..., -1:]] = float('-inf')
                 if top_p < 1.0:
                     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    mask = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1) > top_p
-                    mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), 0
-                    logits[mask.scatter(1, sorted_indices, mask)] = -float('inf')
-                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
+                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                    mask = cumulative_probs > top_p
+                    mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), False
+                    logits[mask.scatter(1, sorted_indices, mask)] = float('-inf')
+                next_token = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1) if do_sample else logits.argmax(dim=-1, keepdim=True)
                 if eos_token_id is not None: next_token = torch.where(finished.unsqueeze(-1), next_token.new_full((next_token.shape[0], 1), eos_token_id), next_token)
                 input_ids = torch.cat([input_ids, next_token], dim=-1)
                 past_len += 1

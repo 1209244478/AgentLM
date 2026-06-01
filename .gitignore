@@ -2,8 +2,10 @@ __pycache__/
 *.pyc
 .DS_Store
 out
+tests/benchmark_results.json
 website/
 docs-minimind/
+
 
 # Data files (too large for GitHub)
 dataset/*.jsonl
@@ -31,3 +33,4 @@ build/
 
 # OS
 Thumbs.db
+

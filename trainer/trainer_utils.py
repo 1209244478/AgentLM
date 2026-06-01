@@ -278,7 +278,7 @@ class LMForRewardModel:
 # Muon Optimizer (DeepSeek V4)
 # ============================================================
 
-def newton_schulz_5(G, eps=1e-5):
+def newton_schulz_5(G, eps=1e-5, n_iters=5):
     if G.dim() > 2:
         G_flat, is_reshaped = G.reshape(G.shape[0], -1), True
     elif G.dim() < 2:
@@ -294,7 +294,7 @@ def newton_schulz_5(G, eps=1e-5):
         X = a * X + b * X @ (X.T @ X) + c * X @ (X.T @ X) @ (X.T @ X)
     else:
         X = a * X + b * (X @ X.T) @ X + c * (X @ X.T) @ (X @ X.T) @ X
-    for _ in range(5):
+    for _ in range(n_iters):
         if m > n:
             X = 1.5 * X - 0.5 * (X @ X.T) @ X
         elif m < n:
@@ -316,15 +316,20 @@ class Muon(torch.optim.Optimizer):
             lr, momentum, nesterov, wd = group['lr'], group['momentum'], group['nesterov'], group['weight_decay']
             for p in group['params']:
                 if p.grad is None: continue
-                grad = p.grad + wd * p.data if wd != 0 else p.grad
+                grad = p.grad
+                if wd != 0:
+                    grad = grad + wd * p.data
                 state = self.state[p]
-                if 'buf' not in state: state['buf'] = torch.zeros_like(grad)
+                if 'buf' not in state:
+                    state['buf'] = torch.zeros_like(grad)
                 buf = state['buf'].mul_(momentum).add_(grad)
-                update = newton_schulz_5(buf)
-                if nesterov:
-                    update = momentum * update + grad
-                    update = newton_schulz_5(update) if grad.dim() >= 2 else update
-                if grad.dim() >= 2:
+                if grad.dim() < 2:
+                    update = buf
+                else:
+                    update = newton_schulz_5(buf, n_iters=5)
+                    if nesterov:
+                        update = momentum * update + grad
+                        update = newton_schulz_5(update, n_iters=5)
                     m_dim = max(grad.shape[0], grad.reshape(grad.shape[0], -1).shape[1])
                     update = update * (m_dim ** 0.5)
                 p.data.add_(update, alpha=-lr)
@@ -348,7 +353,7 @@ class MixedMuonAdamW(torch.optim.Optimizer):
                 if grad.dim() >= 2 and min(grad.shape[0], grad.shape[-1]) >= 16:
                     if 'muon_buf' not in state: state['muon_buf'] = torch.zeros_like(grad)
                     buf = state['muon_buf'].mul_(mom).add_(grad)
-                    update = newton_schulz_5(buf)
+                    update = newton_schulz_5(buf, n_iters=5)
                     scale = max(grad.shape[0], grad.reshape(grad.shape[0], -1).shape[1]) ** 0.5
                     p.data.add_(update * scale, alpha=-lr)
                 else:

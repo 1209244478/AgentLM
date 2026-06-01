@@ -238,6 +238,75 @@ for name, model in [
         check(f"{name} Generate", False, str(e)[:80])
 
 # ============================================================
+print("\n--- [10] MSA (MiniMax Sparse Attention) ---")
+from model.model_advanced import MiniMaxSparseAttention
+
+cfg_msa = MiniMindConfig(
+    hidden_size=512, num_hidden_layers=4, num_attention_heads=8,
+    num_key_value_heads=4, head_dim=64, msa_enabled=True,
+    msa_block_size=32, msa_topk_ratio=0.25, msa_fallback_len=64,
+)
+model_msa = MiniMindForCausalLM(cfg_msa)
+model_msa.eval()
+
+msa_params = sum(p.numel() for p in model_msa.parameters())
+check("MSA 模型构建", msa_params > 0, f"params={msa_params / 1e6:.2f}M")
+
+try:
+    with torch.no_grad():
+        out = model_msa(torch.randint(0, cfg_msa.vocab_size, (1, 32)))
+    check("MSA 短序列前向", out.logits.shape == (1, 32, cfg_msa.vocab_size), f"shape={out.logits.shape}")
+    check("MSA 短序列无NaN", not torch.isnan(out.logits).any().item())
+except Exception as e:
+    check("MSA 短序列前向", False, str(e)[:80])
+
+try:
+    with torch.no_grad():
+        out = model_msa(torch.randint(0, cfg_msa.vocab_size, (1, 128)))
+    check("MSA 长序列前向(稀疏路径)", out.logits.shape == (1, 128, cfg_msa.vocab_size), f"shape={out.logits.shape}")
+    check("MSA 长序列无NaN", not torch.isnan(out.logits).any().item())
+except Exception as e:
+    check("MSA 长序列前向", False, str(e)[:80])
+
+try:
+    with torch.no_grad():
+        gen = model_msa.generate(torch.randint(0, cfg_msa.vocab_size, (1, 4)), max_new_tokens=4, do_sample=False, use_cache=False)
+    check("MSA Generate (no cache)", gen.shape[1] <= 8, f"shape={gen.shape}")
+except Exception as e:
+    check("MSA Generate (no cache)", False, str(e)[:80])
+
+try:
+    with torch.no_grad():
+        gen = model_msa.generate(torch.randint(0, cfg_msa.vocab_size, (1, 4)), max_new_tokens=4, do_sample=False, use_cache=True)
+    check("MSA Generate (KVCache)", gen.shape[1] <= 8, f"shape={gen.shape}")
+except Exception as e:
+    check("MSA Generate (KVCache)", False, str(e)[:80])
+
+try:
+    x = torch.randint(0, cfg_msa.vocab_size, (1, 32))
+    labels = torch.randint(0, cfg_msa.vocab_size, (1, 32))
+    out = model_msa(x, labels=labels)
+    out.loss.backward()
+    n_grad = sum(1 for p in model_msa.parameters() if p.grad is not None)
+    check("MSA 梯度回传", n_grad > 0, f"{n_grad} params have grad")
+    check("MSA Loss有限", torch.isfinite(out.loss).item())
+except Exception as e:
+    check("MSA 梯度回传", False, str(e)[:80])
+
+try:
+    msa_layer = MiniMaxSparseAttention(cfg_msa)
+    xq = torch.randn(1, 128, 8, 64)
+    xk = torch.randn(1, 128, 4, 64)
+    topk_indices = msa_layer._index_branch(xq, xk)
+    n_blocks = (128 + 32 - 1) // 32
+    check("MSA Index Branch", topk_indices.shape == (1, 128, 4, max(1, int(n_blocks * 0.25))),
+          f"topk_indices={topk_indices.shape}")
+    check("MSA TopK范围", (topk_indices >= 0).all().item() and (topk_indices < n_blocks).all().item(),
+          f"max={topk_indices.max().item()}, n_blocks={n_blocks}")
+except Exception as e:
+    check("MSA Index Branch", False, str(e)[:80])
+
+# ============================================================
 print()
 print("=" * 70)
 print(f"  结果: {PASS}/{PASS + FAIL} 通过")
