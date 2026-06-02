@@ -30,6 +30,7 @@ prepare_data() {
   # 检查 SFT 数据
   if [ ! -f "../dataset/sft_combined.jsonl" ]; then
     echo "  未找到 sft_combined.jsonl，尝试下载..."
+    pip install -q addict datasets 2>/dev/null || true
     python -c "
 import os, json
 sft_path = '../dataset/sft_combined.jsonl'
@@ -42,8 +43,25 @@ if not os.path.exists(sft_path):
                 f.write(json.dumps(item, ensure_ascii=False) + '\n')
         print(f'  下载完成: {sft_path}')
     except Exception as e:
-        print(f'  自动下载失败: {e}')
-        print('  请手动下载: https://www.modelscope.cn/datasets/gongjy/minimind_dataset')
+        print(f'  modelscope下载失败: {e}')
+        print('  尝试 HuggingFace...')
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                repo_id='jingyaogong/minimind_dataset',
+                repo_type='dataset',
+                local_dir='../dataset',
+                allow_patterns=['*.jsonl']
+            )
+            # 如果文件名不同，做软链接
+            import glob
+            sft_files = glob.glob('../dataset/sft*.jsonl')
+            if sft_files and not os.path.exists(sft_path):
+                os.symlink(os.path.basename(sft_files[0]), sft_path)
+            print(f'  HuggingFace下载完成')
+        except Exception as e2:
+            print(f'  HuggingFace下载失败: {e2}')
+            print('  请手动下载: https://www.modelscope.cn/datasets/gongjy/minimind_dataset')
 "
   else
     echo "  sft_combined.jsonl 已存在"
@@ -70,15 +88,25 @@ if not os.path.exists(sft_path):
 
 # ======================== T4 阶段 ========================
 
-# --- minimind-3 (64M): SFT + Agent RL ---
+# --- minimind-3 (64M, hidden=768): Pretrain → SFT + Agent RL ---
 train_m3() {
   echo ""
-  echo "========== [T4] minimind-3 (64M) SFT + Agent RL =========="
+  echo "========== [T4] minimind-3 (64M) =========="
   local CONFIG="../minimind-3/config.json"
-  local NAME="minimind-3"
+
+  # Pretrain
+  echo "  [1/3] Pretrain..."
+  python train_pretrain.py \
+    --config "$CONFIG" \
+    --epochs 1 \
+    --batch_size 32 \
+    --learning_rate 5e-4 \
+    --accumulation_steps 4 \
+    --save_weight "pretrain" \
+    --num_workers 4
 
   # SFT (20% 工具混合)
-  echo "  [1/2] SFT (20% tool_call_ratio)..."
+  echo "  [2/3] SFT (20% tool_call_ratio)..."
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
@@ -87,11 +115,12 @@ train_m3() {
     --accumulation_steps 1 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --save_weight "full_sft_${NAME}" \
+    --from_weight "pretrain" \
+    --save_weight "full_sft" \
     --num_workers 4
 
   # Agent RL
-  echo "  [2/2] Agent RL (ReAct)..."
+  echo "  [3/3] Agent RL (ReAct)..."
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
@@ -101,22 +130,32 @@ train_m3() {
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
-    --from_weight "full_sft_${NAME}" \
-    --save_weight "agent_${NAME}" \
+    --from_weight "full_sft" \
+    --save_weight "agent" \
     --num_workers 2
 
   echo "  minimind-3 完成"
 }
 
-# --- minimind-5 (186M): SFT + Agent RL ---
+# --- minimind-5 (186M, hidden=1024): Pretrain → SFT + Agent RL ---
 train_m5() {
   echo ""
-  echo "========== [T4] minimind-5 (186M) SFT + Agent RL =========="
-  local CONFIG="../minimind-3/config.json"
-  local NAME="minimind-5"
+  echo "========== [T4] minimind-5 (186M) =========="
+  local CONFIG="../minimind-3/config_5.json"
+
+  # Pretrain
+  echo "  [1/3] Pretrain..."
+  python train_pretrain.py \
+    --config "$CONFIG" \
+    --epochs 1 \
+    --batch_size 16 \
+    --learning_rate 5e-4 \
+    --accumulation_steps 4 \
+    --save_weight "pretrain" \
+    --num_workers 4
 
   # SFT (20% 工具混合)
-  echo "  [1/2] SFT (20% tool_call_ratio)..."
+  echo "  [2/3] SFT (20% tool_call_ratio)..."
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
@@ -125,11 +164,12 @@ train_m5() {
     --accumulation_steps 2 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --save_weight "full_sft_${NAME}" \
+    --from_weight "pretrain" \
+    --save_weight "full_sft" \
     --num_workers 4
 
   # Agent RL
-  echo "  [2/2] Agent RL (ReAct)..."
+  echo "  [3/3] Agent RL (ReAct)..."
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
@@ -139,22 +179,32 @@ train_m5() {
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
-    --from_weight "full_sft_${NAME}" \
-    --save_weight "agent_${NAME}" \
+    --from_weight "full_sft" \
+    --save_weight "agent" \
     --num_workers 2
 
   echo "  minimind-5 完成"
 }
 
-# --- minimind-6 (500M): SFT + Agent RL ---
+# --- minimind-6 (500M, hidden=1280): Pretrain → SFT + Agent RL ---
 train_m6() {
   echo ""
-  echo "========== [T4] minimind-6 (500M) SFT + Agent RL =========="
+  echo "========== [T4] minimind-6 (500M) =========="
   local CONFIG="../minimind-3/config_6.json"
-  local NAME="minimind-6"
+
+  # Pretrain
+  echo "  [1/3] Pretrain..."
+  python train_pretrain.py \
+    --config "$CONFIG" \
+    --epochs 1 \
+    --batch_size 8 \
+    --learning_rate 5e-4 \
+    --accumulation_steps 8 \
+    --save_weight "pretrain" \
+    --num_workers 4
 
   # SFT (20% 工具混合)
-  echo "  [1/2] SFT (20% tool_call_ratio)..."
+  echo "  [2/3] SFT (20% tool_call_ratio)..."
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
@@ -163,11 +213,12 @@ train_m6() {
     --accumulation_steps 4 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --save_weight "full_sft_${NAME}" \
+    --from_weight "pretrain" \
+    --save_weight "full_sft" \
     --num_workers 4
 
   # Agent RL
-  echo "  [2/2] Agent RL (ReAct)..."
+  echo "  [3/3] Agent RL (ReAct)..."
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
@@ -177,8 +228,8 @@ train_m6() {
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
-    --from_weight "full_sft_${NAME}" \
-    --save_weight "agent_${NAME}" \
+    --from_weight "full_sft" \
+    --save_weight "agent" \
     --num_workers 2
 
   echo "  minimind-6 完成"
@@ -188,7 +239,7 @@ train_m6() {
 train_ablation() {
   echo ""
   echo "========== [T4] minimind-5 消融实验 =========="
-  local CONFIG="../minimind-3/config.json"
+  local CONFIG="../minimind-3/config_5.json"
 
   # ---- 消融 A: tool_call_ratio 对比 ----
   echo ""
@@ -200,6 +251,7 @@ train_ablation() {
     --learning_rate 1e-5 \
     --accumulation_steps 2 \
     --tool_call_ratio 0.0 \
+    --from_weight "pretrain" \
     --save_weight "ablation_sft_ratio0" \
     --num_workers 4
 
@@ -213,6 +265,7 @@ train_ablation() {
     --accumulation_steps 2 \
     --tool_call_ratio 0.1 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
+    --from_weight "pretrain" \
     --save_weight "ablation_sft_ratio01" \
     --num_workers 4
 
@@ -226,10 +279,11 @@ train_ablation() {
     --accumulation_steps 2 \
     --tool_call_ratio 0.3 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
+    --from_weight "pretrain" \
     --save_weight "ablation_sft_ratio03" \
     --num_workers 4
 
-  # ---- 消融 B: max_turns 对比 (基于 full_sft_minimind-5) ----
+  # ---- 消融 B: max_turns 对比 (基于 full_sft_1024) ----
   echo ""
   echo "  --- 消融 B: Agent RL max_turns=3 ---"
   python train_agent.py \
@@ -241,12 +295,9 @@ train_ablation() {
     --max_turns 3 \
     --system_prompt_type react \
     --loss_type cispo \
-    --from_weight "full_sft_minimind-5" \
+    --from_weight "full_sft" \
     --save_weight "ablation_agent_turns3" \
     --num_workers 2
-
-  echo ""
-  echo "  --- 消融 B: Agent RL max_turns=5 (已在上文完成) ---"
 
   # ---- 消融 C: loss_type 对比 ----
   echo ""
@@ -260,7 +311,7 @@ train_ablation() {
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type grpo \
-    --from_weight "full_sft_minimind-5" \
+    --from_weight "full_sft" \
     --save_weight "ablation_agent_grpo" \
     --num_workers 2
 
@@ -269,15 +320,25 @@ train_ablation() {
 
 # ======================== A10 阶段 ========================
 
-# --- minimind-7 (1.5B): SFT + Agent RL ---
+# --- minimind-7 (1.5B, hidden=2048): Pretrain → SFT + Agent RL ---
 train_m7() {
   echo ""
-  echo "========== [A10] minimind-7 (1.5B) SFT + Agent RL =========="
+  echo "========== [A10] minimind-7 (1.5B) =========="
   local CONFIG="../minimind-3/config_7.json"
-  local NAME="minimind-7"
+
+  # Pretrain
+  echo "  [1/3] Pretrain..."
+  python train_pretrain.py \
+    --config "$CONFIG" \
+    --epochs 1 \
+    --batch_size 4 \
+    --learning_rate 5e-4 \
+    --accumulation_steps 16 \
+    --save_weight "pretrain" \
+    --num_workers 4
 
   # SFT (20% 工具混合)
-  echo "  [1/2] SFT (20% tool_call_ratio)..."
+  echo "  [2/3] SFT (20% tool_call_ratio)..."
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
@@ -286,11 +347,12 @@ train_m7() {
     --accumulation_steps 4 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --save_weight "full_sft_${NAME}" \
+    --from_weight "pretrain" \
+    --save_weight "full_sft" \
     --num_workers 4
 
   # Agent RL (ReAct)
-  echo "  [2/2] Agent RL (ReAct)..."
+  echo "  [3/3] Agent RL (ReAct)..."
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
@@ -300,8 +362,8 @@ train_m7() {
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
-    --from_weight "full_sft_${NAME}" \
-    --save_weight "agent_${NAME}" \
+    --from_weight "full_sft" \
+    --save_weight "agent" \
     --num_workers 2
 
   echo "  minimind-7 主流程完成"
@@ -313,8 +375,8 @@ train_compare() {
   echo "========== [A10] minimind-7 ReAct vs Plan-Execute 对比 =========="
   local CONFIG="../minimind-3/config_7.json"
 
-  # ReAct Agent (如果上面已训练则跳过)
-  if [ ! -d "../out/agent_minimind-7" ]; then
+  # ReAct Agent
+  if [ ! -f "../out/agent_2048.pth" ]; then
     echo "  [1/2] Agent RL (ReAct)..."
     python train_agent.py \
       --config "$CONFIG" \
@@ -325,11 +387,11 @@ train_compare() {
       --max_turns 5 \
       --system_prompt_type react \
       --loss_type cispo \
-      --from_weight "full_sft_minimind-7" \
-      --save_weight "agent_minimind-7_react" \
+      --from_weight "full_sft" \
+      --save_weight "agent_react" \
       --num_workers 2
   else
-    echo "  [1/2] ReAct 已训练，跳过"
+    echo "  [1/2] ReAct 已训练 (agent_2048.pth)，跳过"
   fi
 
   # Plan-Execute Agent
@@ -343,8 +405,8 @@ train_compare() {
     --max_turns 5 \
     --system_prompt_type plan_execute \
     --loss_type cispo \
-    --from_weight "full_sft_minimind-7" \
-    --save_weight "agent_minimind-7_plan_execute" \
+    --from_weight "full_sft" \
+    --save_weight "agent_plan_execute" \
     --num_workers 2
 
   echo "  ReAct vs Plan-Execute 对比完成"
@@ -357,15 +419,16 @@ evaluate() {
   echo "========== [评估] =========="
   cd ..
 
-  for WEIGHT in full_sft_minimind-3 full_sft_minimind-5 full_sft_minimind-6 full_sft_minimind-7 \
-               agent_minimind-3 agent_minimind-5 agent_minimind-6 agent_minimind-7 \
+  for WEIGHT in pretrain full_sft agent \
                ablation_sft_ratio0 ablation_sft_ratio01 ablation_sft_ratio03 \
                ablation_agent_turns3 ablation_agent_grpo \
-               agent_minimind-7_react agent_minimind-7_plan_execute; do
-    if [ -d "out/$WEIGHT" ]; then
-      echo "  评估: $WEIGHT"
-      python scripts/eval_toolcall.py --weight "$WEIGHT" --benchmark 1 2>/dev/null || true
-    fi
+               agent_react agent_plan_execute; do
+    for SIZE in 768 1024 1280 2048; do
+      if [ -f "out/${WEIGHT}_${SIZE}.pth" ]; then
+        echo "  评估: ${WEIGHT}_${SIZE}"
+        python scripts/eval_toolcall.py --weight "$WEIGHT" --benchmark 1 2>/dev/null || true
+      fi
+    done
   done
 
   cd trainer
@@ -438,14 +501,14 @@ case $TASK in
     echo ""
     echo "T4 任务 (B方案):"
     echo "  t4_data      — 仅数据准备"
-    echo "  t4_m3        — minimind-3 SFT + Agent RL"
-    echo "  t4_m5        — minimind-5 SFT + Agent RL"
-    echo "  t4_m6        — minimind-6 SFT + Agent RL"
+    echo "  t4_m3        — minimind-3 Pretrain+SFT+Agent RL"
+    echo "  t4_m5        — minimind-5 Pretrain+SFT+Agent RL"
+    echo "  t4_m6        — minimind-6 Pretrain+SFT+Agent RL"
     echo "  t4_ablation  — minimind-5 消融实验 (3组)"
     echo "  t4           — T4 全部任务"
     echo ""
     echo "A10 任务 (C方案):"
-    echo "  a10_m7       — minimind-7 SFT + Agent RL"
+    echo "  a10_m7       — minimind-7 Pretrain+SFT+Agent RL"
     echo "  a10_compare  — minimind-7 ReAct vs Plan-Execute"
     echo "  a10          — A10 全部任务"
     echo ""
