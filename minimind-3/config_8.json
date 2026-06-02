@@ -1,0 +1,31 @@
+{
+  "architectures": [
+    "MiniMindForCausalLM"
+  ],
+  "model_type": "minimind",
+  "hidden_size": 4096,
+  "num_hidden_layers": 32,
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 128,
+  "hidden_act": "silu",
+  "intermediate_size": 11008,
+  "max_position_embeddings": 32768,
+  "rms_norm_eps": 1e-06,
+  "rope_theta": 1000000.0,
+  "vocab_size": 32000,
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "tie_word_embeddings": true,
+  "flash_attn": true,
+  "dropout": 0.0,
+  "inference_rope_scaling": false,
+  "use_moe": false,
+  "layer_share_factor": 1,
+  "mtp_num_heads": 2,
+  "mtp_loss_weight": 0.1,
+  "ttt_enabled": false,
+  "ttt_lr": 1e-4,
+  "ttt_chunk_size": 512,
+  "ttt_layers": null
+}
