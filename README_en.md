@@ -1,11 +1,4 @@
 <div align="center">
-
-[![GitHub Code License](https://img.shields.io/github/license/jingyaogong/minimind)](LICENSE)
-[![GitHub last commit](https://img.shields.io/github/last-commit/jingyaogong/minimind)](https://github.com/jingyaogong/minimind/commits/master)
-
-</div>
-
-<div align="center">
   <h3>MiniMind Agent — Training Language Models with Tool-Use Capabilities from Scratch</h3>
 </div>
 
