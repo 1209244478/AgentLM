@@ -110,9 +110,9 @@ train_m3() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 32 \
+    --batch_size 8 \
     --learning_rate 1e-5 \
-    --accumulation_steps 1 \
+    --accumulation_steps 4 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -124,9 +124,9 @@ train_m3() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 4 \
+    --batch_size 2 \
     --learning_rate 3e-7 \
-    --accumulation_steps 4 \
+    --accumulation_steps 8 \
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
@@ -159,9 +159,9 @@ train_m5() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 16 \
+    --batch_size 4 \
     --learning_rate 1e-5 \
-    --accumulation_steps 2 \
+    --accumulation_steps 8 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -173,9 +173,9 @@ train_m5() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
@@ -208,9 +208,9 @@ train_m6() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 8 \
+    --batch_size 2 \
     --learning_rate 1e-5 \
-    --accumulation_steps 4 \
+    --accumulation_steps 16 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -222,9 +222,9 @@ train_m6() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
@@ -247,9 +247,9 @@ train_ablation() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 16 \
+    --batch_size 4 \
     --learning_rate 1e-5 \
-    --accumulation_steps 2 \
+    --accumulation_steps 8 \
     --tool_call_ratio 0.0 \
     --from_weight "pretrain" \
     --save_weight "ablation_sft_ratio0" \
@@ -260,9 +260,9 @@ train_ablation() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 16 \
+    --batch_size 4 \
     --learning_rate 1e-5 \
-    --accumulation_steps 2 \
+    --accumulation_steps 8 \
     --tool_call_ratio 0.1 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -274,9 +274,9 @@ train_ablation() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 16 \
+    --batch_size 4 \
     --learning_rate 1e-5 \
-    --accumulation_steps 2 \
+    --accumulation_steps 8 \
     --tool_call_ratio 0.3 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -289,9 +289,9 @@ train_ablation() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 3 \
     --system_prompt_type react \
     --loss_type cispo \
@@ -305,9 +305,9 @@ train_ablation() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type grpo \
@@ -342,9 +342,9 @@ train_m7() {
   python train_full_sft.py \
     --config "$CONFIG" \
     --epochs 2 \
-    --batch_size 8 \
+    --batch_size 2 \
     --learning_rate 1e-5 \
-    --accumulation_steps 4 \
+    --accumulation_steps 16 \
     --tool_call_ratio 0.2 \
     --tool_call_data_path ../dataset/agent_rl.jsonl \
     --from_weight "pretrain" \
@@ -356,9 +356,9 @@ train_m7() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 5 \
     --system_prompt_type react \
     --loss_type cispo \
@@ -381,9 +381,9 @@ train_compare() {
     python train_agent.py \
       --config "$CONFIG" \
       --epochs 1 \
-      --batch_size 2 \
+      --batch_size 1 \
       --learning_rate 3e-7 \
-      --accumulation_steps 8 \
+      --accumulation_steps 16 \
       --max_turns 5 \
       --system_prompt_type react \
       --loss_type cispo \
@@ -399,9 +399,9 @@ train_compare() {
   python train_agent.py \
     --config "$CONFIG" \
     --epochs 1 \
-    --batch_size 2 \
+    --batch_size 1 \
     --learning_rate 3e-7 \
-    --accumulation_steps 8 \
+    --accumulation_steps 16 \
     --max_turns 5 \
     --system_prompt_type plan_execute \
     --loss_type cispo \
