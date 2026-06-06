@@ -24,6 +24,25 @@ cd trainer
 
 # ======================== 公共函数 ========================
 
+# 从 config.json 获取 hidden_size
+get_hidden_size() {
+  python -c "import json; print(json.load(open('$1'))['hidden_size'])"
+}
+
+# 检查权重是否已存在，存在则跳过
+# 用法: skip_if_exists "pretrain" "$CONFIG"
+skip_if_exists() {
+  local PREFIX="$1"
+  local CONFIG="$2"
+  local HIDDEN=$(get_hidden_size "$CONFIG")
+  local WEIGHT="../out/${PREFIX}_${HIDDEN}.pth"
+  if [ -f "$WEIGHT" ]; then
+    echo "  $WEIGHT 已存在，跳过"
+    return 0  # skip
+  fi
+  return 1  # not skip
+}
+
 prepare_data() {
   echo "========== [数据准备] =========="
 
@@ -95,44 +114,56 @@ train_m3() {
   local CONFIG="../minimind-3/config.json"
 
   # Pretrain
-  echo "  [1/3] Pretrain..."
-  python train_pretrain.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 32 \
-    --learning_rate 5e-4 \
-    --accumulation_steps 4 \
-    --save_weight "pretrain" \
-    --num_workers 4
+  if skip_if_exists "pretrain" "$CONFIG"; then
+    echo "  [1/3] Pretrain 已完成，跳过"
+  else
+    echo "  [1/3] Pretrain..."
+    python train_pretrain.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 32 \
+      --learning_rate 5e-4 \
+      --accumulation_steps 4 \
+      --save_weight "pretrain" \
+      --num_workers 4
+  fi
 
   # SFT (20% 工具混合)
-  echo "  [2/3] SFT (20% tool_call_ratio)..."
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 8 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 4 \
-    --tool_call_ratio 0.2 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "full_sft" \
-    --num_workers 4
+  if skip_if_exists "full_sft" "$CONFIG"; then
+    echo "  [2/3] SFT 已完成，跳过"
+  else
+    echo "  [2/3] SFT (20% tool_call_ratio)..."
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 8 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 4 \
+      --tool_call_ratio 0.2 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "full_sft" \
+      --num_workers 4
+  fi
 
   # Agent RL
-  echo "  [3/3] Agent RL (ReAct)..."
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 2 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 8 \
-    --max_turns 5 \
-    --system_prompt_type react \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "agent" \
-    --num_workers 2
+  if skip_if_exists "agent" "$CONFIG"; then
+    echo "  [3/3] Agent RL 已完成，跳过"
+  else
+    echo "  [3/3] Agent RL (ReAct)..."
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 2 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 8 \
+      --max_turns 5 \
+      --system_prompt_type react \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "agent" \
+      --num_workers 2
+  fi
 
   echo "  minimind-3 完成"
 }
@@ -144,44 +175,56 @@ train_m5() {
   local CONFIG="../minimind-3/config_5.json"
 
   # Pretrain
-  echo "  [1/3] Pretrain..."
-  python train_pretrain.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 16 \
-    --learning_rate 5e-4 \
-    --accumulation_steps 4 \
-    --save_weight "pretrain" \
-    --num_workers 4
+  if skip_if_exists "pretrain" "$CONFIG"; then
+    echo "  [1/3] Pretrain 已完成，跳过"
+  else
+    echo "  [1/3] Pretrain..."
+    python train_pretrain.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 16 \
+      --learning_rate 5e-4 \
+      --accumulation_steps 4 \
+      --save_weight "pretrain" \
+      --num_workers 4
+  fi
 
   # SFT (20% 工具混合)
-  echo "  [2/3] SFT (20% tool_call_ratio)..."
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 4 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 8 \
-    --tool_call_ratio 0.2 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "full_sft" \
-    --num_workers 4
+  if skip_if_exists "full_sft" "$CONFIG"; then
+    echo "  [2/3] SFT 已完成，跳过"
+  else
+    echo "  [2/3] SFT (20% tool_call_ratio)..."
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 4 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 8 \
+      --tool_call_ratio 0.2 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "full_sft" \
+      --num_workers 4
+  fi
 
   # Agent RL
-  echo "  [3/3] Agent RL (ReAct)..."
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 5 \
-    --system_prompt_type react \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "agent" \
-    --num_workers 2
+  if skip_if_exists "agent" "$CONFIG"; then
+    echo "  [3/3] Agent RL 已完成，跳过"
+  else
+    echo "  [3/3] Agent RL (ReAct)..."
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 5 \
+      --system_prompt_type react \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "agent" \
+      --num_workers 2
+  fi
 
   echo "  minimind-5 完成"
 }
@@ -193,44 +236,56 @@ train_m6() {
   local CONFIG="../minimind-3/config_6.json"
 
   # Pretrain
-  echo "  [1/3] Pretrain..."
-  python train_pretrain.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 8 \
-    --learning_rate 5e-4 \
-    --accumulation_steps 8 \
-    --save_weight "pretrain" \
-    --num_workers 4
+  if skip_if_exists "pretrain" "$CONFIG"; then
+    echo "  [1/3] Pretrain 已完成，跳过"
+  else
+    echo "  [1/3] Pretrain..."
+    python train_pretrain.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 8 \
+      --learning_rate 5e-4 \
+      --accumulation_steps 8 \
+      --save_weight "pretrain" \
+      --num_workers 4
+  fi
 
   # SFT (20% 工具混合)
-  echo "  [2/3] SFT (20% tool_call_ratio)..."
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 2 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 16 \
-    --tool_call_ratio 0.2 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "full_sft" \
-    --num_workers 4
+  if skip_if_exists "full_sft" "$CONFIG"; then
+    echo "  [2/3] SFT 已完成，跳过"
+  else
+    echo "  [2/3] SFT (20% tool_call_ratio)..."
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 2 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 16 \
+      --tool_call_ratio 0.2 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "full_sft" \
+      --num_workers 4
+  fi
 
   # Agent RL
-  echo "  [3/3] Agent RL (ReAct)..."
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 5 \
-    --system_prompt_type react \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "agent" \
-    --num_workers 2
+  if skip_if_exists "agent" "$CONFIG"; then
+    echo "  [3/3] Agent RL 已完成，跳过"
+  else
+    echo "  [3/3] Agent RL (ReAct)..."
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 5 \
+      --system_prompt_type react \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "agent" \
+      --num_workers 2
+  fi
 
   echo "  minimind-6 完成"
 }
@@ -243,77 +298,97 @@ train_ablation() {
 
   # ---- 消融 A: tool_call_ratio 对比 ----
   echo ""
-  echo "  --- 消融 A: tool_call_ratio = 0.0 (无工具混合) ---"
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 4 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 8 \
-    --tool_call_ratio 0.0 \
-    --from_weight "pretrain" \
-    --save_weight "ablation_sft_ratio0" \
-    --num_workers 4
+  if skip_if_exists "ablation_sft_ratio0" "$CONFIG"; then
+    echo "  --- 消融 A: ratio=0.0 已完成，跳过 ---"
+  else
+    echo "  --- 消融 A: tool_call_ratio = 0.0 (无工具混合) ---"
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 4 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 8 \
+      --tool_call_ratio 0.0 \
+      --from_weight "pretrain" \
+      --save_weight "ablation_sft_ratio0" \
+      --num_workers 4
+  fi
 
   echo ""
-  echo "  --- 消融 A: tool_call_ratio = 0.1 ---"
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 4 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 8 \
-    --tool_call_ratio 0.1 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "ablation_sft_ratio01" \
-    --num_workers 4
+  if skip_if_exists "ablation_sft_ratio01" "$CONFIG"; then
+    echo "  --- 消融 A: ratio=0.1 已完成，跳过 ---"
+  else
+    echo "  --- 消融 A: tool_call_ratio = 0.1 ---"
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 4 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 8 \
+      --tool_call_ratio 0.1 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "ablation_sft_ratio01" \
+      --num_workers 4
+  fi
 
   echo ""
-  echo "  --- 消融 A: tool_call_ratio = 0.3 ---"
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 4 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 8 \
-    --tool_call_ratio 0.3 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "ablation_sft_ratio03" \
-    --num_workers 4
+  if skip_if_exists "ablation_sft_ratio03" "$CONFIG"; then
+    echo "  --- 消融 A: ratio=0.3 已完成，跳过 ---"
+  else
+    echo "  --- 消融 A: tool_call_ratio = 0.3 ---"
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 4 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 8 \
+      --tool_call_ratio 0.3 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "ablation_sft_ratio03" \
+      --num_workers 4
+  fi
 
   # ---- 消融 B: max_turns 对比 (基于 full_sft_1024) ----
   echo ""
-  echo "  --- 消融 B: Agent RL max_turns=3 ---"
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 3 \
-    --system_prompt_type react \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "ablation_agent_turns3" \
-    --num_workers 2
+  if skip_if_exists "ablation_agent_turns3" "$CONFIG"; then
+    echo "  --- 消融 B: max_turns=3 已完成，跳过 ---"
+  else
+    echo "  --- 消融 B: Agent RL max_turns=3 ---"
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 3 \
+      --system_prompt_type react \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "ablation_agent_turns3" \
+      --num_workers 2
+  fi
 
   # ---- 消融 C: loss_type 对比 ----
   echo ""
-  echo "  --- 消融 C: Agent RL loss_type=grpo ---"
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 5 \
-    --system_prompt_type react \
-    --loss_type grpo \
-    --from_weight "full_sft" \
-    --save_weight "ablation_agent_grpo" \
-    --num_workers 2
+  if skip_if_exists "ablation_agent_grpo" "$CONFIG"; then
+    echo "  --- 消融 C: loss_type=grpo 已完成，跳过 ---"
+  else
+    echo "  --- 消融 C: Agent RL loss_type=grpo ---"
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 5 \
+      --system_prompt_type react \
+      --loss_type grpo \
+      --from_weight "full_sft" \
+      --save_weight "ablation_agent_grpo" \
+      --num_workers 2
+  fi
 
   echo "  消融实验完成"
 }
@@ -327,44 +402,56 @@ train_m7() {
   local CONFIG="../minimind-3/config_7.json"
 
   # Pretrain
-  echo "  [1/3] Pretrain..."
-  python train_pretrain.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 4 \
-    --learning_rate 5e-4 \
-    --accumulation_steps 16 \
-    --save_weight "pretrain" \
-    --num_workers 4
+  if skip_if_exists "pretrain" "$CONFIG"; then
+    echo "  [1/3] Pretrain 已完成，跳过"
+  else
+    echo "  [1/3] Pretrain..."
+    python train_pretrain.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 4 \
+      --learning_rate 5e-4 \
+      --accumulation_steps 16 \
+      --save_weight "pretrain" \
+      --num_workers 4
+  fi
 
   # SFT (20% 工具混合)
-  echo "  [2/3] SFT (20% tool_call_ratio)..."
-  python train_full_sft.py \
-    --config "$CONFIG" \
-    --epochs 2 \
-    --batch_size 2 \
-    --learning_rate 1e-5 \
-    --accumulation_steps 16 \
-    --tool_call_ratio 0.2 \
-    --tool_call_data_path ../dataset/agent_rl.jsonl \
-    --from_weight "pretrain" \
-    --save_weight "full_sft" \
-    --num_workers 4
+  if skip_if_exists "full_sft" "$CONFIG"; then
+    echo "  [2/3] SFT 已完成，跳过"
+  else
+    echo "  [2/3] SFT (20% tool_call_ratio)..."
+    python train_full_sft.py \
+      --config "$CONFIG" \
+      --epochs 2 \
+      --batch_size 2 \
+      --learning_rate 1e-5 \
+      --accumulation_steps 16 \
+      --tool_call_ratio 0.2 \
+      --tool_call_data_path ../dataset/agent_rl.jsonl \
+      --from_weight "pretrain" \
+      --save_weight "full_sft" \
+      --num_workers 4
+  fi
 
   # Agent RL (ReAct)
-  echo "  [3/3] Agent RL (ReAct)..."
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 5 \
-    --system_prompt_type react \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "agent" \
-    --num_workers 2
+  if skip_if_exists "agent" "$CONFIG"; then
+    echo "  [3/3] Agent RL 已完成，跳过"
+  else
+    echo "  [3/3] Agent RL (ReAct)..."
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 5 \
+      --system_prompt_type react \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "agent" \
+      --num_workers 2
+  fi
 
   echo "  minimind-7 主流程完成"
 }
@@ -376,7 +463,9 @@ train_compare() {
   local CONFIG="../minimind-3/config_7.json"
 
   # ReAct Agent
-  if [ ! -f "../out/agent_2048.pth" ]; then
+  if skip_if_exists "agent_react" "$CONFIG"; then
+    echo "  [1/2] Agent RL (ReAct) 已完成，跳过"
+  else
     echo "  [1/2] Agent RL (ReAct)..."
     python train_agent.py \
       --config "$CONFIG" \
@@ -390,24 +479,26 @@ train_compare() {
       --from_weight "full_sft" \
       --save_weight "agent_react" \
       --num_workers 2
-  else
-    echo "  [1/2] ReAct 已训练 (agent_2048.pth)，跳过"
   fi
 
   # Plan-Execute Agent
-  echo "  [2/2] Agent RL (Plan-Execute)..."
-  python train_agent.py \
-    --config "$CONFIG" \
-    --epochs 1 \
-    --batch_size 1 \
-    --learning_rate 3e-7 \
-    --accumulation_steps 16 \
-    --max_turns 5 \
-    --system_prompt_type plan_execute \
-    --loss_type cispo \
-    --from_weight "full_sft" \
-    --save_weight "agent_plan_execute" \
-    --num_workers 2
+  if skip_if_exists "agent_plan_execute" "$CONFIG"; then
+    echo "  [2/2] Agent RL (Plan-Execute) 已完成，跳过"
+  else
+    echo "  [2/2] Agent RL (Plan-Execute)..."
+    python train_agent.py \
+      --config "$CONFIG" \
+      --epochs 1 \
+      --batch_size 1 \
+      --learning_rate 3e-7 \
+      --accumulation_steps 16 \
+      --max_turns 5 \
+      --system_prompt_type plan_execute \
+      --loss_type cispo \
+      --from_weight "full_sft" \
+      --save_weight "agent_plan_execute" \
+      --num_workers 2
+  fi
 
   echo "  ReAct vs Plan-Execute 对比完成"
 }
