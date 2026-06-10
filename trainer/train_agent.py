@@ -395,8 +395,15 @@ if __name__ == "__main__":
     ref_model, _ = init_model(lm_config, args.from_weight, device=args.device)
     ref_model = ref_model.eval().requires_grad_(False)
 
-    reward_model = LMForRewardModel(args.reward_model_path, device=args.device, dtype=torch.float16)
-    Logger(f'Loaded reward model from {args.reward_model_path}')
+    reward_model = None
+    if args.reward_model_path and os.path.isdir(args.reward_model_path):
+        try:
+            reward_model = LMForRewardModel(args.reward_model_path, device=args.device, dtype=torch.float16)
+            Logger(f'Loaded reward model from {args.reward_model_path}')
+        except Exception as e:
+            Logger(f'Warning: Failed to load reward model: {e}, using rule-based rewards only')
+    else:
+        Logger(f'No reward model at {args.reward_model_path}, using rule-based rewards only')
     # Rollout引擎
     rollout_engine = create_rollout_engine(
         engine_type=args.rollout_engine,
